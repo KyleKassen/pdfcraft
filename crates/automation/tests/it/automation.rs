@@ -2464,6 +2464,54 @@ fn forms_through_tools() {
     assert_ne!(v, "Filled by an agent");
 }
 
+/// Filling and importing a choice export value must not select an earlier option whose
+/// display label happens to match it; the exact selection survives history and saving.
+#[test]
+fn choice_export_values_win_over_labels_through_tools() {
+    let dir = workdir("choice-export-precedence");
+    let bytes = pdf_of(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R 8 0 R] >>",
+        "<< /Fields [6 0 R 7 0 R 8 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (combo) /Ff 131072 /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (A) /Rect [20 150 220 175] /P 3 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (list) /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (A) /Rect [20 85 220 140] /P 3 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (multi) /Ff 2097152 /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (A) /Rect [20 20 220 75] /P 3 0 R >>",
+    ]);
+    std::fs::write(dir.join("choice.pdf"), bytes).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path": "choice.pdf"}))["doc"].as_u64().unwrap();
+    let values = |a: &mut Automation, doc| {
+        let fields = ok(a, "form_fields", json!({"doc": doc}));
+        fields["fields"].as_array().unwrap().iter().map(|f| f["value"].clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(values(&mut a, doc), [json!("A"), json!("A"), json!(["A"])]);
+    ok(&mut a, "form_fill", json!({"doc": doc, "values": {"combo": "B", "list": "B", "multi": ["B", "Friendly"]}}));
+    let picked = [json!("B"), json!("B"), json!(["B", "C"])];
+    assert_eq!(values(&mut a, doc), picked);
+    assert!(page_text(&mut a, doc)[0].contains("Target"), "the selected combo label is drawn");
+    ok(&mut a, "edit_undo", json!({"doc": doc}));
+    assert_eq!(values(&mut a, doc), [json!("A"), json!("A"), json!(["A"])]);
+    ok(&mut a, "edit_redo", json!({"doc": doc}));
+    assert_eq!(values(&mut a, doc), picked);
+    assert!(a.call("form_fill", &json!({"doc": doc, "values": {"multi": ["A", "missing"]}})).is_err());
+    assert_eq!(values(&mut a, doc), picked, "a refused selection keeps every field");
+    ok(&mut a, "edit_undo", json!({"doc": doc}));
+    assert_eq!(values(&mut a, doc), [json!("A"), json!("A"), json!(["A"])], "a refused selection creates no history entry");
+    ok(&mut a, "edit_redo", json!({"doc": doc}));
+    ok(&mut a, "doc_export_data", json!({"doc": doc, "path": "choices.xfdf", "what": "fields"}));
+    ok(&mut a, "form_fill", json!({"doc": doc, "values": {"combo": "Friendly", "list": "Friendly", "multi": ["Friendly"]}}));
+    assert_eq!(values(&mut a, doc), [json!("C"), json!("C"), json!(["C"])]);
+    ok(&mut a, "doc_import_data", json!({"doc": doc, "path": "choices.xfdf"}));
+    assert_eq!(values(&mut a, doc), picked, "XFDF export values do not turn into another option's labels");
+    ok(&mut a, "doc_save", json!({"doc": doc, "path": "filled.pdf"}));
+    let mut reopened = auto(&dir);
+    let saved = ok(&mut reopened, "doc_open", json!({"path": "filled.pdf"}))["doc"].as_u64().unwrap();
+    assert_eq!(values(&mut reopened, saved), picked);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A PDF of the given objects (numbered from 1).
 fn pdf_of(objs: &[&str]) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();

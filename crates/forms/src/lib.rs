@@ -237,6 +237,7 @@ pub enum FieldValue {
     /// Radio group: the on-state to select (`None`: none selected).
     Radio(Option<String>),
     /// Combo box or list box: export values (several only for multi-select lists).
+    /// A display label is accepted when no export value matches; exact exports take priority.
     Choice(Vec<String>),
 }
 
