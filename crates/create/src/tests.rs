@@ -706,6 +706,44 @@ fn indirect_image_metadata_keeps_export_limits() {
     }
 }
 
+/// An ICC profile's indirect component count selects the same export mapping as a direct one.
+#[test]
+fn icc_component_counts_resolve_indirect_integers() {
+    for (components, space, samples) in [
+        (1, b"GRAY", vec![0, 255]),
+        (3, b"RGB ", vec![0, 0, 0, 255, 255, 255]),
+        (4, b"CMYK", vec![0, 0, 0, 255, 0, 0, 0, 0]),
+        (2, b"RGB ", vec![0, 0, 0, 255, 255, 255]),
+    ] {
+        let make = |indirect| {
+            let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+            with_image(&mut doc, |doc| {
+                let n = Object::Int(components);
+                let n = if indirect { Object::Ref(doc.add(n)) } else { n };
+                let profile = doc.add(Object::Stream(Stream::from_raw(Dict::from_iter([(b"N".to_vec(), n)]), icc_profile(space))));
+                let mut image = image_dict(2, 1, "DeviceRGB", 8);
+                image.set(b"ColorSpace".to_vec(), Object::Array(vec![Object::name("ICCBased"), Object::Ref(profile)]));
+                Stream::from_raw(image, samples.clone())
+            });
+            reopen(&doc)
+        };
+        let direct = extract_images(&make(false), &[0], 0);
+        let indirect_doc = make(true);
+        let indirect = extract_images(&indirect_doc, &[0], 0);
+        if components == 2 {
+            assert!(direct.images.is_empty() && indirect.images.is_empty(), "unsupported ICC component counts stay refused");
+            assert_eq!(indirect.skipped.len(), 1);
+            continue;
+        }
+        assert!(indirect.skipped.is_empty(), "components={components}: {:?}", indirect.skipped);
+        assert_eq!(indirect.images.len(), 1);
+        assert_eq!(indirect.images[0].data, direct.images[0].data, "components={components}");
+        let (ext, bytes) = image_file(&indirect_doc, indirect.images[0].object).unwrap();
+        assert_eq!(ext, "png");
+        assert_eq!(bytes, direct.images[0].data);
+    }
+}
+
 /// The exported file's extension and its pixels as RGBA.
 fn exported_rgba(doc: &Document) -> (&'static str, Vec<u8>) {
     let out = extract_images(doc, &[0], 0);

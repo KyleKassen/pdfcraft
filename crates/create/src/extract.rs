@@ -367,6 +367,7 @@ impl Space {
 /// A lookup table holds at most 256 entries of 4 bytes; decoding stops well past that.
 const MAX_LOOKUP: usize = 64 << 10;
 
+/// Read the export component layout without applying ICC or calibrated color transforms.
 fn space(doc: &Document, cs: Option<&Object>) -> Result<Space, String> {
     let Some(cs) = cs else { return Err("the image has no colour space".into()) };
     let cs = doc.resolve(cs);
@@ -380,7 +381,7 @@ fn space(doc: &Document, cs: Option<&Object>) -> Result<Space, String> {
         },
         Object::Array(a) => match a.first().and_then(Object::as_name) {
             Some(b"ICCBased") => match a.get(1).map(|s| doc.resolve(s)).as_deref() {
-                Some(Object::Stream(icc)) => match icc.dict.int(b"N") {
+                Some(Object::Stream(icc)) => match integer(doc, &icc.dict, b"N") {
                     Some(1) => Ok(Space::Gray),
                     Some(3) => Ok(Space::Rgb),
                     Some(4) => Ok(Space::Cmyk),
