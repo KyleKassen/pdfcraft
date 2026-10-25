@@ -145,6 +145,14 @@ pub(crate) fn remove_invalid(doc: &mut Document, pages: &[ObjRef]) -> Result<(us
 /// Every named destination some object refers to (links, bookmarks, actions, open action).
 fn referenced_names(doc: &Document) -> HashSet<Vec<u8>> {
     let mut out = HashSet::new();
+    // The catalog may name its opening destination directly, without a GoTo action.
+    if let Some(name) = doc
+        .root()
+        .and_then(|r| doc.get(r).as_dict().and_then(|c| c.get(b"OpenAction").cloned()))
+        .and_then(|action| dest_name(doc.resolve(&action).as_ref()))
+    {
+        out.insert(name);
+    }
     let mut visit = |o: &Object| {
         let mut stack = vec![o.clone()];
         while let Some(o) = stack.pop() {

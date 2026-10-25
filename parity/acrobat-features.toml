@@ -7648,8 +7648,8 @@ milestone = "M11"
 status = "shipped"
 commands = ["optimize.advanced"]
 tools = ["doc_optimize"]
-evidence = ["crates/optimize/tests/optimize.rs::invalid_links_and_unreferenced_destinations_go"]
-notes = "Clean Up: links to missing pages or names are removed; bookmarks keep their place (and children) but lose a broken destination; named destinations nothing refers to (links, bookmarks, actions anywhere) are removed from the name tree and the old /Dests; counts reported"
+evidence = ["crates/optimize/tests/optimize.rs::invalid_links_and_unreferenced_destinations_go", "crates/optimize/tests/optimize.rs::named_opening_destinations_survive_optimization", "crates/optimize/tests/optimize.rs::only_local_named_opening_destinations_are_retained"]
+notes = "Clean Up: links to missing pages or names are removed; bookmarks keep their place (and children) but lose a broken destination; named destinations nothing refers to (links, bookmarks, actions anywhere) are removed from the name tree and the old /Dests; counts reported. Names used by the catalog opening view are retained through optimize/save/reopen, including direct and indirect name/string OpenAction values. Remote GoToR/GoToE targets and private nested OpenAction keys do not pin local destinations. This cleanup does not repair an already-missing opening destination."
 
 [[feature]]
 id = "optimize.optimize-content"

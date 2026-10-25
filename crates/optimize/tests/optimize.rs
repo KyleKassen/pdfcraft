@@ -1326,6 +1326,107 @@ fn named_dest_keys(doc: &Document) -> Vec<Vec<u8>> {
     arr.chunks(2).filter_map(|c| doc.resolve(&c[0]).as_string().map(|s| s.bytes.clone())).collect()
 }
 
+/// An opening target on page two at 200%, plus a genuinely unused destination on page one.
+fn opening_destination_fixture(legacy: bool) -> Document {
+    let mut doc = Document::new_empty();
+    let first = page(&mut doc, &[], "0 0 1 rg 10 10 100 100 re f");
+    let second = page(&mut doc, &[], "0 1 0 rg 10 10 100 100 re f");
+    let destination = Object::Array(vec![Object::Ref(second), Object::name("XYZ"), 50.into(), 600.into(), 2.into()]);
+    let unused = Object::Array(vec![Object::Ref(first), Object::name("Fit")]);
+    let value = if legacy {
+        Object::Dict(Dict::from_iter([(b"chapter".to_vec(), destination), (b"unused".to_vec(), unused)]))
+    } else {
+        let s = |text: &str| Object::String(pdfcraft_cos::PdfString::literal(text.as_bytes().to_vec()));
+        let tree = doc.add(Object::Dict(Dict::from_iter([(b"Names".to_vec(), Object::Array(vec![s("chapter"), destination, s("unused"), unused]))])));
+        Object::Dict(Dict::from_iter([(b"Dests".to_vec(), Object::Ref(tree))]))
+    };
+    let value = Object::Ref(doc.add(value));
+    doc.update_dict(doc.root().unwrap(), |c| c.set(if legacy { b"Dests".to_vec() } else { b"Names".to_vec() }, value)).unwrap();
+    doc
+}
+
+/// The fixture's destinations, in either the legacy dictionary or the name tree.
+fn opening_destination_entries(doc: &Document, legacy: bool) -> Vec<(Vec<u8>, Object)> {
+    let catalog = doc.get(doc.root().unwrap());
+    let catalog = catalog.as_dict().unwrap();
+    if legacy {
+        return doc.resolve(catalog.get(b"Dests").unwrap()).as_dict().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+    let names = doc.resolve(catalog.get(b"Names").unwrap());
+    let tree = doc.resolve(names.as_dict().unwrap().get(b"Dests").unwrap());
+    let entries = doc.resolve(tree.as_dict().unwrap().get(b"Names").unwrap());
+    entries
+        .as_array()
+        .unwrap()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[name, destination]| (doc.resolve(name).as_string().unwrap().bytes.clone(), destination.clone()))
+        .collect()
+}
+
+/// Reduce File Size must keep a destination used only by the catalog's named opening view.
+#[test]
+fn named_opening_destinations_survive_optimization() {
+    for legacy in [false, true] {
+        for as_name in [false, true] {
+            for indirect in [false, true] {
+                let mut doc = opening_destination_fixture(legacy);
+                let token = if as_name { Object::name("chapter") } else { Object::String(pdfcraft_cos::PdfString::literal(b"chapter".to_vec())) };
+                let action = if indirect { Object::Ref(doc.add(token.clone())) } else { token.clone() };
+                doc.update_dict(doc.root().unwrap(), |c| c.set(b"OpenAction".to_vec(), action)).unwrap();
+                let mut doc = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+                assert_eq!(opening_destination_entries(&doc, legacy).len(), 2);
+                let report = optimize(&mut doc, &Settings::default()).unwrap();
+                assert_eq!(report.unreferenced_dests, 1, "legacy={legacy}, as_name={as_name}, indirect={indirect}");
+                let reopened = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+                for result in [&doc, &reopened] {
+                    let entries = opening_destination_entries(result, legacy);
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].0, b"chapter");
+                    let pages = pdfcraft_annot::page_refs(result).unwrap();
+                    assert_eq!(
+                        entries[0].1,
+                        Object::Array(vec![Object::Ref(pages[1]), Object::name("XYZ"), 50.into(), 600.into(), 2.into()]),
+                        "opening page, position and magnification are retained"
+                    );
+                    let catalog = result.get(result.root().unwrap());
+                    assert_eq!(*result.resolve(catalog.as_dict().unwrap().get(b"OpenAction").unwrap()), token);
+                }
+            }
+        }
+    }
+}
+
+/// Remote opening actions and arbitrary matching metadata do not use local destinations.
+#[test]
+fn only_local_named_opening_destinations_are_retained() {
+    for kind in ["GoTo", "GoToR", "GoToE", "explicit", "unresolved", "nested", "cyclic"] {
+        let mut doc = opening_destination_fixture(false);
+        let name = Object::String(pdfcraft_cos::PdfString::literal(b"chapter".to_vec()));
+        let action = match kind {
+            "explicit" => Object::Array(vec![Object::Ref(pdfcraft_annot::page_refs(&doc).unwrap()[1]), Object::name("Fit")]),
+            "unresolved" | "nested" => Object::name("missing"),
+            "cyclic" => {
+                let r = doc.add(Object::Null);
+                doc.set(r, Object::Ref(r));
+                Object::Ref(r)
+            }
+            _ => Object::Dict(Dict::from_iter([(b"S".to_vec(), Object::name(kind)), (b"D".to_vec(), name.clone())])),
+        };
+        doc.update_dict(doc.root().unwrap(), |c| {
+            c.set(b"OpenAction".to_vec(), action.clone());
+            c.set(b"PrivateData".to_vec(), Object::Dict(Dict::from_iter([(b"OpenAction".to_vec(), name)])));
+        })
+        .unwrap();
+        let report = optimize(&mut doc, &Settings::default()).unwrap();
+        assert_eq!(report.unreferenced_dests, if kind == "GoTo" { 1 } else { 2 }, "{kind}");
+        let keys: Vec<_> = opening_destination_entries(&doc, false).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(keys, if kind == "GoTo" { vec![b"chapter".to_vec()] } else { Vec::new() }, "{kind}");
+        assert_eq!(doc.get(doc.root().unwrap()).as_dict().unwrap().get(b"OpenAction"), Some(&action), "the opening action stays as written");
+    }
+}
+
 /// Page content long enough for LZW codes to grow past 9 bits, where `EarlyChange` matters.
 fn lzw_ops() -> Vec<u8> {
     (0..300).flat_map(|i| format!("{} {} m {} {} l S\n", i % 97, i * 7 % 389, i * 13 % 612, i * 31 % 792).into_bytes()).collect()
