@@ -65,6 +65,10 @@ let cells: Vec<table::Cell> = grid.cells_for(names)?;      // "Table1_1", "Table
   their caption.
 - Check boxes and radio buttons switch `/V` and each widget's `/AS`. Widgets with no appearances
   get PdfCraft's own (a drawn check mark or dot; no symbol font needed).
+- Detection names text blanks from a nearby same-line label on their right when its first strong character has right-to-left direction (#4714, partial).
+  It retains the text layer's logical word order, including embedded Latin words and numbers.
+  A closer left-side label takes priority, with ties keeping the left label; the existing above-label fallback remains.
+  This remains a geometric heuristic over extracted words, not a qualification of the report's browser-printed row shifts or checkbox cases.
 - Imported `/MaxLen 0` is treated as unlimited (also clearing an inherited limit), while the
   original entry is preserved. Positive limits still apply.
 - Values are validated (options, `MaxLen`, single vs multi-select, NoToggleToOff, read-only) and a
