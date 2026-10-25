@@ -220,7 +220,6 @@ fn empty_clip() -> [Op; 3] {
     [Op::new("re", vec![num(0.0); 4]), Op::new("W", vec![]), Op::new("n", vec![])]
 }
 
-
 /// One glyph of a shown string.
 struct Glyph {
     bytes: std::ops::Range<usize>,

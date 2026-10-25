@@ -289,6 +289,7 @@ fn vectors_are_removed_or_clipped_and_inline_images_go() {
     assert!(c.contains("150 150 m"), "the line elsewhere stays");
 }
 
+/// Partly covered painted paths, including clip-and-paint paths, must not retain their geometry.
 #[test]
 fn partially_covered_vector_paths_do_not_leak_drawing_commands() {
     // A vector path with detailed drawing commands (e.g. outlined text or confidential geometry)
