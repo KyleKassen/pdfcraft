@@ -289,6 +289,7 @@ fn name_obj(text: &str) -> Object {
     Object::Name(name_bytes(text))
 }
 
+/// Return an invalid-value error for a rejected field operation.
 fn invalid<T>(m: impl Into<String>) -> Result<T, FormError> {
     Err(FormError::Invalid(m.into()))
 }

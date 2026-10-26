@@ -1067,6 +1067,7 @@ fn check_boxes_keep_non_utf8_state_names() {
     assert_eq!(doc.get(f.widgets[0].obj).as_dict().unwrap().name(b"AS"), Some(&b"Off"[..]));
 }
 
+/// State names preserve their original bytes across Unicode and escaped-name conversions.
 #[test]
 fn name_text_round_trips() {
     for bytes in [&b"Yes"[..], b"\x82\xcd\x82\xa2", "はい".as_bytes(), b"A#1", b"a b", b"", b"\xff#\x00"] {
