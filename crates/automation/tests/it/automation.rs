@@ -2468,7 +2468,8 @@ fn forms_through_tools() {
 /// display label happens to match it; the exact selection survives history and saving.
 #[test]
 fn choice_export_values_win_over_labels_through_tools() {
-    let dir = workdir("choice-export-precedence");
+    let temp_dir = tempfile::Builder::new().prefix("pdfcraft-choice-export-precedence-").tempdir().unwrap();
+    let dir = temp_dir.path();
     let bytes = pdf_of(&[
         "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>",
@@ -2480,7 +2481,7 @@ fn choice_export_values_win_over_labels_through_tools() {
         "<< /Type /Annot /Subtype /Widget /FT /Ch /T (multi) /Ff 2097152 /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (A) /Rect [20 20 220 75] /P 3 0 R >>",
     ]);
     std::fs::write(dir.join("choice.pdf"), bytes).unwrap();
-    let mut a = auto(&dir);
+    let mut a = auto(dir);
     let doc = ok(&mut a, "doc_open", json!({"path": "choice.pdf"}))["doc"].as_u64().unwrap();
     let values = |a: &mut Automation, doc| {
         let fields = ok(a, "form_fields", json!({"doc": doc}));
@@ -2490,7 +2491,18 @@ fn choice_export_values_win_over_labels_through_tools() {
     ok(&mut a, "form_fill", json!({"doc": doc, "values": {"combo": "B", "list": "B", "multi": ["B", "Friendly"]}}));
     let picked = [json!("B"), json!("B"), json!(["B", "C"])];
     assert_eq!(values(&mut a, doc), picked);
-    assert!(page_text(&mut a, doc)[0].contains("Target"), "the selected combo label is drawn");
+    let appearances = |a: &mut Automation, doc| {
+        let fields = ok(a, "form_fields", json!({"doc": doc}));
+        for field in fields["fields"].as_array().unwrap() {
+            let drawn = ok(a, "text_extract", json!({"doc": doc, "pages": [1], "rect": field["rect"]}));
+            let text = drawn["pages"][0]["text"].as_str().unwrap();
+            assert!(text.contains("Target"), "{} draws the display label: {text}", field["name"]);
+            if field["name"] != "combo" {
+                assert!(text.contains("Friendly"), "{} draws the remaining list labels: {text}", field["name"]);
+            }
+        }
+    };
+    appearances(&mut a, doc);
     ok(&mut a, "edit_undo", json!({"doc": doc}));
     assert_eq!(values(&mut a, doc), [json!("A"), json!("A"), json!(["A"])]);
     ok(&mut a, "edit_redo", json!({"doc": doc}));
@@ -2506,10 +2518,11 @@ fn choice_export_values_win_over_labels_through_tools() {
     ok(&mut a, "doc_import_data", json!({"doc": doc, "path": "choices.xfdf"}));
     assert_eq!(values(&mut a, doc), picked, "XFDF export values do not turn into another option's labels");
     ok(&mut a, "doc_save", json!({"doc": doc, "path": "filled.pdf"}));
-    let mut reopened = auto(&dir);
+    let mut reopened = auto(dir);
     let saved = ok(&mut reopened, "doc_open", json!({"path": "filled.pdf"}))["doc"].as_u64().unwrap();
     assert_eq!(values(&mut reopened, saved), picked);
-    std::fs::remove_dir_all(dir).unwrap();
+    appearances(&mut reopened, saved);
+    temp_dir.close().unwrap();
 }
 
 /// A PDF of the given objects (numbered from 1).

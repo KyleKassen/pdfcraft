@@ -1078,6 +1078,7 @@ fn name_text_round_trips() {
     assert_eq!(name_bytes("#G1#4"), b"#G1#4");
 }
 
+/// Display labels normalize to saved exports, while invalid or excessive selections are refused.
 #[test]
 fn choices_accept_exports_or_display_text() {
     let mut doc = fixture();
@@ -1152,6 +1153,7 @@ fn choice_export_values_take_precedence_over_display_text() {
     }
 }
 
+/// Picking rows outside the current view scrolls the list so both selections are visibly highlighted.
 #[test]
 fn list_box_selection_scrolls_to_show_selected_options() {
     let objs: Vec<String> = vec![

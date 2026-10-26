@@ -195,6 +195,8 @@ pub fn calculations_changed(before: &[Field], after: &[Field]) -> Vec<String> {
         .collect()
 }
 
+/// Validate a value for its field kind, write the stored selection and regenerate its appearance.
+/// Choice fields normalize both text and choice inputs through the same export-first lookup.
 pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scripts: &mut dyn Scripts) -> Result<(), FormError> {
     match (f.kind, value) {
         (FieldKind::Text, FieldValue::Text(t)) => {
