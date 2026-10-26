@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
-> **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M10: vector printing resolves annotation rectangles and appearance-state names; estimates unchanged)
+> **Last reviewed:** 2026-10-26 | **Last updated:** 2026-10-26 | **Change:** minor (M10: vector printing follows bounded annotation-value reference chains; estimates unchanged)
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M7, #2636 partial: pasting added text boxes and images in the engine and through `content_copy`; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: image optimization accounts for page-local UserUnit; estimates unchanged)
@@ -200,6 +200,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- **2026-10-26 (M10):** Vector printing follows up to 64 indirect references for annotation rectangles, coordinates and appearance-state names, rejecting cycles and longer chains without changing source objects.
 - **2026-10-25 (M10):** Vector printing keeps field and comment artwork whose rectangle coordinates or appearance-state names are indirect, requiring exactly four finite resolved rectangle values and a usable state name for state dictionaries.
   Synthetic CLI and source regressions cover the behavior.
   Estimates unchanged.
@@ -687,6 +688,7 @@ Newest first: the date, what moved, and the new overall estimate.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | M10: annotation rectangles, coordinates and appearance-state names follow up to 64 indirect references with cycle detection; standalone-object save/reopen and malformed-chain regressions, estimates unchanged. |
 | 2026-10-25 | minor | M10: vector printing resolves annotation rectangles and appearance-state names; synthetic save/reopen and print-content-mode evidence, estimates unchanged. |
 | 2026-10-23 | minor | M8, #3205 follow-up: phone-pattern redaction includes the +39 country code on labelled Italian geographic numbers with a slash; dates, protocol identifiers and whole-run guards remain. Estimates unchanged. |
 | 2026-10-23 | minor | M11: image downsampling measures physical resolution after page-local UserUnit scaling, including shared nested forms; synthetic measurement and optimization regressions. Estimates unchanged. |
