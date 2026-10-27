@@ -203,6 +203,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 - **2026-10-27 (M10, #1201 partial):** Create PDF and Add image retain compatible per-directory TIFF ICC profiles through save/reopen.
   Profiled neutral RGBA stays RGB, with separate opacity; profile bytes are bounded and count toward the retained TIFF-page budget.
+  Impossible profile counts are rejected against the source length before allocation or profile I/O.
   Existing 16-bit precision, associated-alpha handling and unsupported TIFF-format limits remain.
 
 - **2026-10-27 (M10, OCR models):** Model staging downloads and verifies the ONNX pair after the upstream RTEN URL brownout; runtime discovery prefers complete ONNX pairs per directory, retains complete RTEN fallback and preserves directory precedence.

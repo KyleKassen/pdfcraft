@@ -429,10 +429,11 @@ const MAX_TIFF_ICC_BYTES: usize = 16 << 20;
 /// Read the current directory's profile without materializing one TIFF `Value` per byte.
 fn tiff_icc(dec: &mut tiff::decoder::Decoder<std::io::Cursor<&[u8]>>, components: usize) -> Option<Vec<u8>> {
     use tiff::tags::{Tag, Type};
+    let file_len = dec.inner().get_ref().len();
     let mut ifd = dec.image_ifd();
     let entry = ifd.find_entry(Tag::IccProfile)?;
     let len = usize::try_from(entry.count()).ok()?;
-    if !matches!(entry.field_type(), Type::BYTE | Type::UNDEFINED) || !(128..=MAX_TIFF_ICC_BYTES).contains(&len) {
+    if !matches!(entry.field_type(), Type::BYTE | Type::UNDEFINED) || !(128..=MAX_TIFF_ICC_BYTES.min(file_len)).contains(&len) {
         return None;
     }
     let mut profile = Vec::new();

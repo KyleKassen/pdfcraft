@@ -158,6 +158,21 @@ fn tiff_icc_counts_toward_the_retained_budget() {
 }
 
 #[test]
+fn tiff_icc_impossible_count_returns_before_reading_profile_bytes() {
+    let profile = icc_profile(b"RGB ");
+    let mut bytes = tagged_tiff(2, 3, 8, &[90, 80, 70], Some(&profile));
+    let impossible_count = bytes.len() as u32 + 1;
+    assert!(impossible_count < MAX_TIFF_ICC_BYTES as u32);
+    bytes[122..126].copy_from_slice(&impossible_count.to_le_bytes());
+    let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    // Start away from the profile: even a failed exact read may otherwise leave the cursor there.
+    decoder.inner().set_position(0);
+    let before = decoder.inner().position();
+    assert!(tiff_icc(&mut decoder, 3).is_none());
+    assert_eq!(decoder.inner().position(), before, "an impossible count must return before attempting profile I/O");
+}
+
+#[test]
 fn tiff_icc_missing_malformed_and_mismatched_profiles_keep_device_color() {
     let mut broken = icc_profile(b"RGB ");
     broken[36] = 0;
