@@ -37,6 +37,7 @@ annotations); sheets place them with a clip. The result is a fresh, unencrypted,
 garbage-collected file (callers check the print permission).
 Annotation appearances receive unused XObject names, preserving existing page resources even when they use the same naming prefix.
 Existing printable Link appearances are included in the document modes, and excluded from form-fields-only output.
+Print as Image shares this Link selection; its renderer still omits NoView appearances.
 Missing Link appearances are not synthesized.
 
 The GUI Print dialog remembers its last selected paper size across application sessions,

@@ -128,6 +128,36 @@ fn printable_link_appearances_follow_flags_and_content_modes() {
     }
 }
 
+/// Print as Image filters its copy through keep_printed before rendering the retained APs.
+#[test]
+fn raster_copy_retains_printable_links_in_document_modes() {
+    for (subtype, flags, has_ap) in
+        [("Link", 4, true), ("Link", 5, true), ("Link", 0, true), ("Link", 2, true), ("Link", 6, true), ("Popup", 4, true), ("Link", 4, false)]
+    {
+        let (mut doc, _, annotation) = widget_fixture(Some(Object::name("Form")), None);
+        doc.update_dict(annotation, |d| {
+            d.set(b"Subtype".to_vec(), Object::name(subtype));
+            d.set(b"F".to_vec(), Object::Int(flags));
+            if !has_ap {
+                d.remove(b"AP");
+            }
+        })
+        .unwrap();
+        let before = saved(&doc);
+        for content in [Content::Document, Content::DocumentAndMarkups, Content::DocumentAndStamps, Content::FormFieldsOnly] {
+            let mut copy = doc.clone();
+            keep_printed(&mut copy, content);
+            let printed = render(saved(&copy));
+            let visible = subtype == "Link" && flags & 4 != 0 && flags & 2 == 0 && has_ap && content != Content::FormFieldsOnly;
+            let expected = if visible { [0, 255, 0, 255] } else { [255, 255, 255, 255] };
+            assert_eq!(pixel(&printed, 30, 70), expected, "{subtype}, flags={flags}, AP={has_ap}, {content:?}");
+            let blue = if content == Content::FormFieldsOnly { [255, 255, 255, 255] } else { [0, 0, 255, 255] };
+            assert_eq!(pixel(&printed, 4, 96), blue);
+        }
+        assert_eq!(saved(&doc), before, "raster filtering leaves the source unchanged");
+    }
+}
+
 /// Printing keeps occupied page resource names and distinct annotation appearances intact,
 /// whether the page resources are direct or inherited from the page tree.
 #[test]
