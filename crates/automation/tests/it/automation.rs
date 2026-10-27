@@ -7104,6 +7104,60 @@ fn xfa_data_files_export_and_import_through_tools() {
     assert!(std::fs::read_to_string(dir.join("static.xml")).unwrap().contains("<name>Ada</name>"), "a static XFA form exports its data too");
 }
 
+/// Importing XFA data must preserve exact choice exports, appearances and saved datasets.
+#[test]
+fn importing_xfa_choice_exports_does_not_select_a_matching_display_label() {
+    let temp_dir = tempfile::Builder::new().prefix("pdfcraft-xfa-choice-import-").tempdir().unwrap();
+    let dir = temp_dir.path();
+    let xdp = r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/"><template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form"/></template><xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form><combo>C</combo><list>C</list><multi>C</multi></form></xfa:data></xfa:datasets></xdp:xdp>"#;
+    let xfa_stream = format!("<< /Length {} >>\nstream\n{xdp}\nendstream", xdp.len());
+    let bytes = pdf_of(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 220] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R 8 0 R] >>",
+        "<< /Fields [6 0 R 7 0 R 8 0 R] /XFA 9 0 R /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (form[0].combo[0]) /Ff 131072 /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (C) /Rect [20 170 220 195] /P 3 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (form[0].list[0]) /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (C) /Rect [20 95 220 150] /P 3 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (form[0].multi[0]) /Ff 2097152 /Opt [[(A) (B)] [(B) (Target)] [(C) (Friendly)]] /V (C) /Rect [20 20 220 75] /P 3 0 R >>",
+        &xfa_stream,
+    ]);
+    std::fs::write(dir.join("choice.pdf"), &bytes).unwrap();
+    std::fs::write(dir.join("values.xml"), "<form><combo>B</combo><list>B</list><multi>B\nFriendly</multi></form>").unwrap();
+    let mut a = auto(dir);
+    let doc = ok(&mut a, "doc_open", json!({"path": "choice.pdf"}))["doc"].as_u64().unwrap();
+    let values = |a: &mut Automation, doc| {
+        let fields = ok(a, "form_fields", json!({"doc": doc}));
+        fields["fields"].as_array().unwrap().iter().map(|f| f["value"].clone()).collect::<Vec<_>>()
+    };
+    let initial = [json!("C"), json!("C"), json!(["C"])];
+    let picked = [json!("B"), json!("B"), json!(["B", "C"])];
+    assert_eq!(values(&mut a, doc), initial);
+    ok(&mut a, "form_fill", json!({"doc": doc, "values": {"form[0].combo[0]": "B", "form[0].list[0]": "B", "form[0].multi[0]": ["B", "Friendly"]}}));
+    assert_eq!(values(&mut a, doc), picked);
+    let control = a.call("page_render", &json!({"doc": doc, "page": 1, "dpi": 144})).unwrap();
+    ok(&mut a, "form_fill", json!({"doc": doc, "values": {"form[0].combo[0]": "C", "form[0].list[0]": "C", "form[0].multi[0]": ["C"]}}));
+    ok(&mut a, "doc_import_data", json!({"doc": doc, "path": "values.xml"}));
+    assert_eq!(values(&mut a, doc), picked, "imported export B must not become export A through its display label");
+    assert_eq!(a.call("page_render", &json!({"doc": doc, "page": 1, "dpi": 144})).unwrap(), control);
+    ok(&mut a, "edit_undo", json!({"doc": doc}));
+    assert_eq!(values(&mut a, doc), initial);
+    ok(&mut a, "edit_redo", json!({"doc": doc}));
+    assert_eq!(values(&mut a, doc), picked);
+    ok(&mut a, "doc_export_data", json!({"doc": doc, "path": "exported.xml", "what": "fields"}));
+    let exported = std::fs::read_to_string(dir.join("exported.xml")).unwrap();
+    for value in ["<combo>B</combo>", "<list>B</list>", "<multi>B\nC</multi>"] {
+        assert!(exported.contains(value), "the exported dataset keeps {value}: {exported}");
+    }
+    ok(&mut a, "doc_save", json!({"doc": doc, "path": "saved.pdf"}));
+    let mut reopened = auto(dir);
+    let saved = ok(&mut reopened, "doc_open", json!({"path": "saved.pdf"}))["doc"].as_u64().unwrap();
+    assert_eq!(values(&mut reopened, saved), picked);
+    assert_eq!(reopened.call("page_render", &json!({"doc": saved, "page": 1, "dpi": 144})).unwrap(), control);
+    assert_eq!(std::fs::read(dir.join("choice.pdf")).unwrap(), bytes, "the source file stays unchanged");
+    temp_dir.close().unwrap();
+}
+
 #[test]
 fn xfa_rich_text_max_length_is_reported_and_enforced_through_tools() {
     let dir = workdir("xfa-rich-limit");
