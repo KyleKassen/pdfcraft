@@ -39,7 +39,7 @@ its undo/redo history.
 
 `page_extract` and `doc_split` retain resources shared by page content and annotation appearances, tiling patterns, soft-mask groups or Type 3 fonts.
 Inactive appearance states are retained too.
-A bounded dependency walk conservatively skips resource pruning when it cannot finish; independent unused page images remain eligible for removal.
+A bounded dependency walk conservatively skips resource pruning when it cannot finish; independent unused page images remain eligible for removal, including images listed only inside a Form XObject's direct Resources dictionary.
 See [organize resource preservation](../organize/README.md#extract-and-split-resource-preservation) for limits.
 
 ## Text search and cache limits

@@ -24,8 +24,8 @@ enum XKey {
     XObject(ObjRef),
     /// An inline `/XObject` dictionary inside an indirect resources object.
     Resources(ObjRef),
-    /// Everything inline on the page itself.
-    Page(ObjRef),
+    /// An inline XObject map inside a page or Form's direct Resources dictionary.
+    Container(ObjRef),
 }
 
 /// Who owns the resources currently being walked, for the key drawn names are recorded under.
@@ -33,8 +33,8 @@ enum XKey {
 enum Owner {
     /// An indirect resources object (a page's, or a form XObject's own).
     Resources(ObjRef),
-    /// Resources inline on the page.
-    Page(ObjRef),
+    /// Direct Resources owned by a page or Form object.
+    Container(ObjRef),
 }
 
 struct Pruner<'a> {
@@ -76,7 +76,7 @@ impl Pruner<'_> {
             let key = match (xobjects.as_ref(), owner) {
                 (Some(reference), _) => XKey::XObject(reference),
                 (None, Owner::Resources(reference)) => XKey::Resources(reference),
-                (None, Owner::Page(reference)) => XKey::Page(reference),
+                (None, Owner::Container(reference)) => XKey::Container(reference),
             };
             self.unsure.insert(key);
         }
@@ -117,7 +117,7 @@ impl Pruner<'_> {
                     // resource owner with page/Form content we do interpret.
                     self.unsure.insert(XKey::XObject(*r));
                     self.unsure.insert(XKey::Resources(*r));
-                    self.unsure.insert(XKey::Page(*r));
+                    self.unsure.insert(XKey::Container(*r));
                     if self.paint_seen.insert((*r, owner, appearance)) {
                         referenced.push((*r, appearance));
                     }
@@ -192,7 +192,7 @@ impl Pruner<'_> {
         if !self.paint_work(annotations.len()) {
             return;
         }
-        let owner = caller.map_or(Owner::Page(page), |(_, owner)| *owner);
+        let owner = caller.map_or(Owner::Container(page), |(_, owner)| *owner);
         for annotation in annotations {
             let resolved = annotation.as_ref().map(|reference| self.doc.get(reference));
             let annotation = resolved.as_deref().unwrap_or(annotation);
@@ -251,7 +251,7 @@ impl Pruner<'_> {
         }
         let key = match owner {
             Owner::Resources(r) => XKey::Resources(r),
-            Owner::Page(p) => XKey::Page(p),
+            Owner::Container(p) => XKey::Container(p),
         };
         Some((self.doc.resolve(x).as_dict()?.clone(), key))
     }
@@ -284,8 +284,8 @@ impl Pruner<'_> {
                         None => continue,
                     },
                     None => match self.doc.resolve(res).as_dict().cloned() {
-                        // The form carries its resources inline: filter them on the form itself.
-                        Some(d) => (d, Owner::Resources(r)),
+                        // The form carries its resources inline: filter inside its Resources entry.
+                        Some(d) => (d, Owner::Container(r)),
                         None => continue,
                     },
                 },
@@ -325,7 +325,7 @@ pub(crate) fn content_bytes(doc: &Document, contents: &Object) -> Result<Vec<u8>
 fn resolve_resources(doc: &Document, resources: &Object, page: ObjRef) -> Option<(Dict, Owner)> {
     match resources {
         Object::Ref(r) => doc.get(*r).as_dict().cloned().map(|d| (d, Owner::Resources(*r))),
-        Object::Dict(d) => Some((d.clone(), Owner::Page(page))),
+        Object::Dict(d) => Some((d.clone(), Owner::Container(page))),
         _ => None,
     }
 }
@@ -360,9 +360,9 @@ fn filter_at(doc: &mut Document, key: XKey, names: &HashSet<Vec<u8>>) -> Result<
             }
             Ok(removed)
         }
-        XKey::Page(p) => {
-            let Some(pd) = doc.get(p).as_dict().cloned() else { return Ok(0) };
-            let Some(res) = pd.get(b"Resources") else { return Ok(0) };
+        XKey::Container(container) => {
+            let Some(object) = doc.get(container).as_dict().cloned() else { return Ok(0) };
+            let Some(res) = object.get(b"Resources") else { return Ok(0) };
             if res.as_ref().is_some() {
                 return Ok(0); // recorded as Resources(r) instead
             }
@@ -375,7 +375,7 @@ fn filter_at(doc: &mut Document, key: XKey, names: &HashSet<Vec<u8>>) -> Result<
             let removed = drop_unused(&mut xd, names);
             if removed > 0 {
                 rd.set(b"XObject".to_vec(), Object::Dict(xd));
-                doc.update_dict(p, |d| d.set(b"Resources".to_vec(), Object::Dict(rd.clone())))?;
+                doc.update_dict(container, |d| d.set(b"Resources".to_vec(), Object::Dict(rd.clone())))?;
             }
             Ok(removed)
         }

@@ -14,6 +14,7 @@ Resource-less paint also protects the caller's resources; discovery caches inclu
 Graph protection is iterative and bounded to 10,000 resource objects/direct children per extraction, with reference cycles visited once per caller and paint role.
 Exhausting this budget skips pruning for the entire output rather than guessing that an image is unused.
 Independent page resource dictionaries still prune, and shared ordinary graphics-state catalogs are discovered once per owner.
+Direct Resources dictionaries embedded in Form XObjects are pruned inside their containing Form; indirect Resources and XObject maps retain their separate owner paths.
 A nested resource-less paint program can conservatively retain extra caller XObjects even when a nearer explicit resource dictionary would suffice.
 This favors keeping artwork over reducing file size.
 

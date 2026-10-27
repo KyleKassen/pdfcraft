@@ -200,6 +200,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- 2026-10-27: M4 #5016: Extract and Split remove unused image aliases inside Form XObjects with direct Resources dictionaries, retaining nested inherited uses, conservative paint protection and rendered save/reopen fidelity.
+
 - 2026-10-27: M4 #5011: Extract and Split retain resource owners shared with annotation appearances, patterns, soft masks and Type 3 fonts; caller-sensitive discovery, bounded traversal and independent-resource pruning controls cover save/reopen and rendered output.
 
 - **2026-10-27 (M10, OCR models):** Model staging downloads and verifies the ONNX pair after the upstream RTEN URL brownout; runtime discovery prefers complete ONNX pairs per directory, retains complete RTEN fallback and preserves directory precedence.

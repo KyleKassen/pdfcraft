@@ -93,3 +93,66 @@ fn extract_and_split_preserve_shared_stamp_pixels_after_save_and_reopen() {
     let info = call(&mut a, "doc_info", json!({"doc":doc}));
     assert_eq!(info["document"]["dirty"], false);
 }
+
+#[test]
+fn extract_and_split_remove_unused_inline_form_images_without_changing_pixels() {
+    let mut source = Document::open(std::sync::Arc::new(fixture())).unwrap();
+    let page = pdfcraft_organize::pages(&source).unwrap()[0].obj;
+    let page_dict = source.get(page);
+    let resources = source.resolve(page_dict.as_dict().unwrap().get(b"Resources").unwrap());
+    let images = source.resolve(resources.as_dict().unwrap().get(b"XObject").unwrap());
+    let used = images.as_dict().unwrap().reference(b"Page").unwrap();
+    let unused = source.add(Object::Stream(Stream::from_raw(
+        Dict::from_iter([
+            (b"Subtype".to_vec(), Object::name("Image")),
+            (b"Width".to_vec(), 256.into()),
+            (b"Height".to_vec(), 256.into()),
+            (b"BitsPerComponent".to_vec(), 8.into()),
+            (b"ColorSpace".to_vec(), Object::name("DeviceRGB")),
+        ]),
+        [17, 69, 251].repeat(256 * 256),
+    )));
+    let resources = Dict::from_iter([(
+        b"XObject".to_vec(),
+        Object::Dict(Dict::from_iter([(b"Used".to_vec(), Object::Ref(used)), (b"Unused".to_vec(), Object::Ref(unused))])),
+    )]);
+    let form = source.add(Object::Stream(Stream::from_raw(
+        Dict::from_iter([
+            (b"Subtype".to_vec(), Object::name("Form")),
+            (b"BBox".to_vec(), Object::Array(vec![0.into(), 0.into(), 160.into(), 160.into()])),
+            (b"Resources".to_vec(), Object::Dict(resources)),
+        ]),
+        b"q 20 0 0 20 10 10 cm /Used Do Q".to_vec(),
+    )));
+    let contents = source.add(Object::Stream(Stream::from_raw(Dict::new(), b"/Fm Do".to_vec())));
+    source
+        .update_dict(page, |page| {
+            page.set(
+                b"Resources".to_vec(),
+                Object::Dict(Dict::from_iter([(b"XObject".to_vec(), Object::Dict(Dict::from_iter([(b"Fm".to_vec(), Object::Ref(form))])))])),
+            );
+            page.set(b"Contents".to_vec(), Object::Ref(contents));
+        })
+        .unwrap();
+    let source = write_full(&source, &SaveOptions::default()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("source.pdf"), &source).unwrap();
+    let mut a = Automation::new().with_root(dir.path()).unwrap();
+    let doc = call(&mut a, "doc_open", json!({"path":"source.pdf"}))["doc"].as_u64().unwrap();
+    let before = render(&mut a, doc);
+    let extracted =
+        call(&mut a, "page_extract", json!({"doc":doc,"pages":[1],"out":"extracted.pdf","open":true}))["document"]["doc"].as_u64().unwrap();
+    assert_eq!(render(&mut a, extracted), before);
+    assert!(std::fs::metadata(dir.path().join("extracted.pdf")).unwrap().len() + 150_000 < source.len() as u64);
+    call(&mut a, "doc_save", json!({"doc":extracted,"path":"saved.pdf","full":true}));
+    call(&mut a, "doc_close", json!({"doc":extracted}));
+    let reopened = call(&mut a, "doc_open", json!({"path":"saved.pdf"}))["doc"].as_u64().unwrap();
+    assert_eq!(render(&mut a, reopened), before);
+    assert!(std::fs::metadata(dir.path().join("saved.pdf")).unwrap().len() + 150_000 < source.len() as u64);
+    let split = call(&mut a, "doc_split", json!({"doc":doc,"every":1,"out_dir":"parts"}));
+    let path = split["files"][0]["path"].as_str().unwrap();
+    assert!(std::fs::metadata(path).unwrap().len() + 150_000 < source.len() as u64);
+    let part = call(&mut a, "doc_open", json!({"path":path}))["doc"].as_u64().unwrap();
+    assert_eq!(render(&mut a, part), before);
+    assert_eq!(std::fs::read(dir.path().join("source.pdf")).unwrap(), source);
+}
