@@ -41,6 +41,9 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   `EarlyChange`, filters applied before the LZW one go with it and those after it keep their
   bytes. A stream whose LZW data doesn't decode cleanly is left as it is. Not yet: inline images.
   Named destinations used by the catalog's opening view are retained, including direct and indirect names or strings in either destination storage format.
+  Local GoTo actions retain their named targets when `S` is indirect, following up to 64 references with cycle detection for opening actions, links and bookmarks.
+  Remote GoToR/GoToE actions and unusable subtypes do not keep coincidentally named local destinations.
+  This extends optimizer cleanup; the viewer retains its existing action-resolution limits.
 
 The engine runs Remove Hidden Information (`pdfcraft-redact`) for the user-data categories,
 then this, then merges identical objects and writes a full, compressed save

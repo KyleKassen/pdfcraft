@@ -1427,6 +1427,200 @@ fn only_local_named_opening_destinations_are_retained() {
     }
 }
 
+/// Wrap a synthetic action subtype in exactly `depth` standalone indirect objects.
+fn action_subtype_chain(doc: &mut Document, mut value: Object, depth: usize) -> Object {
+    for _ in 0..depth {
+        value = Object::Ref(doc.add(value));
+    }
+    value
+}
+
+/// Attach an action to one navigation owner and return the dictionary/key holding it.
+fn navigation_action(doc: &mut Document, owner: &str, action: Object) -> (ObjRef, &'static [u8]) {
+    let root = doc.root().unwrap();
+    match owner {
+        "opening" => {
+            doc.update_dict(root, |c| c.set(b"OpenAction".to_vec(), action)).unwrap();
+            (root, b"OpenAction")
+        }
+        "link" => {
+            let link = doc.add(Object::Dict(Dict::from_iter([
+                (b"Type".to_vec(), Object::name("Annot")),
+                (b"Subtype".to_vec(), Object::name("Link")),
+                (b"Rect".to_vec(), Object::Array(vec![0.into(), 0.into(), 10.into(), 10.into()])),
+                (b"A".to_vec(), action),
+            ])));
+            doc.update_dict(pdfcraft_annot::page_refs(doc).unwrap()[0], |p| p.set(b"Annots".to_vec(), Object::Array(vec![Object::Ref(link)])))
+                .unwrap();
+            (link, b"A")
+        }
+        "bookmark" => {
+            let outlines = doc.add(Object::Null);
+            let item = doc.add(Object::Dict(Dict::from_iter([
+                (b"Title".to_vec(), Object::String(pdfcraft_cos::PdfString::literal(b"Chapter two".to_vec()))),
+                (b"Parent".to_vec(), Object::Ref(outlines)),
+                (b"A".to_vec(), action),
+            ])));
+            doc.set(outlines, Object::Dict(Dict::from_iter([(b"First".to_vec(), Object::Ref(item)), (b"Last".to_vec(), Object::Ref(item))])));
+            doc.update_dict(root, |c| c.set(b"Outlines".to_vec(), Object::Ref(outlines))).unwrap();
+            (item, b"A")
+        }
+        _ => panic!("unknown navigation owner {owner}"),
+    }
+}
+
+/// Find the fixture's current action without carrying object numbers across full saves.
+fn navigation_action_value(doc: &Document, owner: &str) -> Option<Object> {
+    let catalog = doc.get(doc.root()?);
+    let catalog = catalog.as_dict()?;
+    match owner {
+        "opening" => catalog.get(b"OpenAction").cloned(),
+        "link" => {
+            let page = doc.get(*pdfcraft_annot::page_refs(doc).ok()?.first()?);
+            let annots = doc.resolve(page.as_dict()?.get(b"Annots")?);
+            let link = doc.resolve(annots.as_array()?.first()?);
+            link.as_dict()?.get(b"A").cloned()
+        }
+        "bookmark" => {
+            let outlines = doc.resolve(catalog.get(b"Outlines")?);
+            let item = doc.resolve(outlines.as_dict()?.get(b"First")?);
+            item.as_dict()?.get(b"A").cloned()
+        }
+        _ => panic!("unknown navigation owner {owner}"),
+    }
+}
+
+/// An indirect local GoTo subtype must retain its named target for every navigation owner.
+/// Deeper subtype chains test stored destinations, without claiming that the viewer reads them.
+#[test]
+fn indirect_go_to_subtypes_keep_navigation_destinations() {
+    for legacy in [false, true] {
+        for owner in ["opening", "link", "bookmark"] {
+            for as_name in [false, true] {
+                for depth in [0, 1, 2, 64] {
+                    let mut doc = opening_destination_fixture(legacy);
+                    let subtype = action_subtype_chain(&mut doc, Object::name("GoTo"), depth);
+                    let target_token =
+                        if as_name { Object::name("chapter") } else { Object::String(pdfcraft_cos::PdfString::literal(b"chapter".to_vec())) };
+                    let target = Object::Ref(doc.add(target_token.clone()));
+                    let action = Object::Dict(Dict::from_iter([(b"S".to_vec(), subtype), (b"D".to_vec(), target)]));
+                    let action = Object::Ref(doc.add(action));
+                    navigation_action(&mut doc, owner, action);
+                    // Reference-to-reference objects must stay outside object streams.
+                    let options = SaveOptions { object_streams: false, ..SaveOptions::default() };
+                    let mut doc = Document::open(Arc::new(write_full(&doc, &options).unwrap())).unwrap();
+                    let original_action = navigation_action_value(&doc, owner).unwrap();
+                    let view = pdfcraft_render::DestView::Xyz { left: Some(50.0), top: Some(600.0), zoom: Some(2.0) };
+                    let target_view = |bytes| {
+                        let info = pdfcraft_render::inspect(Arc::new(bytes), None).unwrap();
+                        match owner {
+                            "opening" => info.open_dest,
+                            "link" => match info.links.first().map(|link| &link.target) {
+                                Some(pdfcraft_render::LinkTarget::Page(page, view)) => Some((*page, *view)),
+                                _ => None,
+                            },
+                            "bookmark" => info.outline.first().and_then(|item| item.page.map(|page| (page, item.view))),
+                            _ => panic!("unknown navigation owner {owner}"),
+                        }
+                    };
+                    if depth <= 1 {
+                        assert_eq!(target_view(write_full(&doc, &options).unwrap()), Some((1, view)), "the original target works");
+                    }
+                    let report = optimize(&mut doc, &Settings::default()).unwrap();
+                    assert_eq!(report.unreferenced_dests, 1, "legacy={legacy}, owner={owner}, as_name={as_name}, depth={depth}");
+                    assert_eq!((report.invalid_links, report.invalid_bookmarks), (0, 0));
+                    assert_eq!(navigation_action_value(&doc, owner), Some(original_action), "optimization leaves the existing action intact");
+                    let bytes = write_full(&doc, &options).unwrap();
+                    let reopened = Document::open(Arc::new(bytes.clone())).unwrap();
+                    for result in [&doc, &reopened] {
+                        let entries = opening_destination_entries(result, legacy);
+                        let pages = pdfcraft_annot::page_refs(result).unwrap();
+                        assert_eq!(
+                            entries,
+                            vec![(
+                                b"chapter".to_vec(),
+                                Object::Array(vec![Object::Ref(pages[1]), Object::name("XYZ"), 50.into(), 600.into(), 2.into()])
+                            )]
+                        );
+                        // Full saves renumber references. Check the same action structure and
+                        // values through the current owner rather than stale object numbers.
+                        let action = navigation_action_value(result, owner).unwrap();
+                        assert!(action.as_ref().is_some(), "an indirect action stays indirect");
+                        let action = result.resolve(&action);
+                        let action = action.as_dict().unwrap();
+                        let mut subtype = action.get(b"S").unwrap().clone();
+                        for _ in 0..depth {
+                            subtype = result.get(subtype.as_ref().unwrap()).as_ref().clone();
+                        }
+                        assert_eq!(subtype, Object::name("GoTo"), "the subtype chain retains its exact length and name");
+                        assert_eq!(*result.resolve(action.get(b"D").unwrap()), target_token, "the named target stays unchanged");
+                    }
+                    if depth <= 1 {
+                        assert_eq!(target_view(bytes), Some((1, view)), "saved navigation keeps its page, position and 200% zoom");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Remote/embedded actions and unusable subtype values do not pin same-named local targets.
+#[test]
+fn nonlocal_or_invalid_action_subtypes_do_not_keep_local_destinations() {
+    for legacy in [false, true] {
+        for owner in ["opening", "link", "bookmark"] {
+            for kind in ["GoToR", "GoToE", "URI", "string", "null", "unresolved", "cycle", "too-deep"] {
+                let mut doc = opening_destination_fixture(legacy);
+                let subtype = match kind {
+                    "string" => Object::String(pdfcraft_cos::PdfString::literal(b"GoTo".to_vec())),
+                    "null" => Object::Null,
+                    "unresolved" => Object::Ref(ObjRef::new(999_999, 0)),
+                    "cycle" => {
+                        let first = doc.add(Object::Null);
+                        let second = doc.add(Object::Ref(first));
+                        doc.set(first, Object::Ref(second));
+                        Object::Ref(first)
+                    }
+                    "too-deep" => action_subtype_chain(&mut doc, Object::name("GoTo"), 65),
+                    _ => action_subtype_chain(&mut doc, Object::name(kind), 2),
+                };
+                let action = Object::Dict(Dict::from_iter([
+                    (b"S".to_vec(), subtype),
+                    (b"D".to_vec(), Object::String(pdfcraft_cos::PdfString::literal(b"chapter".to_vec()))),
+                    (b"F".to_vec(), Object::String(pdfcraft_cos::PdfString::literal(b"other.pdf".to_vec()))),
+                ]));
+                let (container, key) = navigation_action(&mut doc, owner, action.clone());
+                let report = optimize(&mut doc, &Settings::default()).unwrap();
+                assert_eq!(report.unreferenced_dests, 2, "legacy={legacy}, owner={owner}, kind={kind}");
+                assert!(opening_destination_entries(&doc, legacy).is_empty());
+                assert_eq!(doc.get(container).as_dict().unwrap().get(key), Some(&action), "unrecognized actions stay as written");
+            }
+        }
+    }
+}
+
+/// Link validation uses the same resolved subtype as destination-use tracking.
+#[test]
+fn indirect_go_to_subtypes_still_remove_missing_link_and_bookmark_targets() {
+    for owner in ["link", "bookmark"] {
+        let mut doc = opening_destination_fixture(false);
+        let subtype = action_subtype_chain(&mut doc, Object::name("GoTo"), 2);
+        let action = Object::Dict(Dict::from_iter([
+            (b"S".to_vec(), subtype),
+            (b"D".to_vec(), Object::String(pdfcraft_cos::PdfString::literal(b"missing".to_vec()))),
+        ]));
+        let (container, key) = navigation_action(&mut doc, owner, action);
+        let report = optimize(&mut doc, &Settings::default()).unwrap();
+        assert_eq!((report.invalid_links, report.invalid_bookmarks), if owner == "link" { (1, 0) } else { (0, 1) });
+        if owner == "link" {
+            let first = doc.get(pdfcraft_annot::page_refs(&doc).unwrap()[0]);
+            assert!(first.as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap().is_empty());
+        } else {
+            assert!(doc.get(container).as_dict().unwrap().get(key).is_none(), "the bookmark title remains without its missing target");
+        }
+    }
+}
+
 /// Page content long enough for LZW codes to grow past 9 bits, where `EarlyChange` matters.
 fn lzw_ops() -> Vec<u8> {
     (0..300).flat_map(|i| format!("{} {} m {} {} l S\n", i % 97, i * 7 % 389, i * 13 % 612, i * 31 % 792).into_bytes()).collect()
