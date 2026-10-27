@@ -201,6 +201,12 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- **2026-10-29 (M10, #5029):** Vector printing also honours the implicit NoRotate behavior of existing Text appearances when the flag is clear.
+  Print eligibility, source dictionaries and shared appearance streams remain unchanged.
+
+- **2026-10-27 (M10, #5029):** Vector printing retains the orientation and upper-left anchor of existing NoRotate annotation appearances on rotated source pages.
+  Crop origins, UserUnit and later sheet transforms remain effective; estimates unchanged.
+
 - **2026-10-27 (M10, annotation print precision):** Vector printing preserves small placement coefficients for existing form, comment and stamp appearances with large bounding boxes or matrices.
   Synthetic render and save/reopen regressions cover the change; estimates unchanged.
 
