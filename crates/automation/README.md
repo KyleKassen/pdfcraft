@@ -71,7 +71,8 @@ semantics; they never silently act on partial text.
 ## Detected text field names
 
 `form_detect_fields` can name a text blank from its nearby right-hand label when the extracted label's first strong character is right-to-left (#4714, partial).
-The label keeps the text layer's logical word order, including embedded Latin words and numbers.
+The label keeps the logical word order supplied by the text reader, including embedded Latin words and numbers.
+Reader-inferred ordering of glyph text with equal RTL/LTR counts remains unqualified; a logical `/ActualText` replacement supplies the intended order.
 A closer left-hand label takes priority, and an equal gap keeps the left label.
 The existing above-label fallback still applies when neither same-line candidate is usable.
 For the report's three Arabic text-layer blanks, preview (`add: false`), adding fields and save/reopen preserve `اسم الشركة`, `الشخص المسؤول` and `رقم الهاتف`.

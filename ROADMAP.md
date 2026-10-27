@@ -2,6 +2,7 @@
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
+> **Last reviewed:** 2026-10-27 | **Last updated:** 2026-10-27 | **Change:** minor (M6, #4714 scope clarification: field names retain order supplied by the text reader; equal-count mixed-direction glyph text remains unqualified; scores and estimates unchanged)
 > **Last reviewed:** 2026-10-27 | **Last updated:** 2026-10-27 | **Change:** minor (M10: OCR model downloads use verified ONNX pairs with legacy discovery fallback; estimates unchanged)
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M6, #4714 partial: detected text blanks use nearby strong RTL labels on their right; browser/checkbox cases remain unqualified; estimates unchanged)
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
@@ -203,7 +204,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 - **2026-10-27 (M10, OCR models):** Model staging downloads and verifies the ONNX pair after the upstream RTEN URL brownout; runtime discovery prefers complete ONNX pairs per directory, retains complete RTEN fallback and preserves directory precedence.
 - **2026-10-25 (M6, #4714 partial):** Detected text blanks can take nearby same-line labels on their right when the label's first strong character is RTL.
-  Extracted logical word order, including Latin words and numbers, is retained; closer left labels take priority and ties keep the left label.
+  Logical word order supplied by the text reader, including Latin words and numbers, is retained; closer left labels take priority and ties keep the left label.
+  Reader-inferred ordering of glyph text with equal RTL/LTR counts remains unqualified; logical `/ActualText` labels retain their intended order.
   Synthetic Arabic text-layer preview/add/save/reopen and font-independent Arabic/Hebrew/mixed-label regressions cover the change.
   Browser-printed row shifts and checkbox cases remain unqualified; estimates unchanged.
 - **2026-10-24 (M10, #4158 partial):** Word, HTML, RTF and PowerPoint export keep a block that continues another on its line (an italic case name, a link, a superscript) as a run in its own style inside that paragraph, with the source's word space, instead of a paragraph of its own. Style changes that wrap onto the next line still split paragraphs (the reading blocks keep style boundaries). Estimates unchanged.
@@ -683,7 +685,11 @@ Newest first: the date, what moved, and the new overall estimate.
 
 ## Revision history
 
-**2026-10-25 | minor:** M6, #4714 partial: text blank detection names fields from nearby strong RTL labels on their right, preserving extracted logical order.
+**2026-10-27 | minor:** M6, #4714 scope clarification: field naming retains order supplied by the text reader.
+Glyph text with equal RTL/LTR counts can have ambiguous paragraph direction; its inferred order remains unqualified, while logical `/ActualText` labels work.
+No renderer heuristic, status or estimate changes.
+
+**2026-10-25 | minor:** M6, #4714 partial: text blank detection names fields from nearby strong RTL labels on their right, preserving order supplied by the text reader.
 Browser-printed row shifts and checkbox cases remain unqualified.
 Estimates unchanged.
 
