@@ -202,7 +202,12 @@ fn percent_decode(value: &str) -> Result<String, String> {
     while let Some(byte) = bytes.next() {
         if byte == b'%' {
             let hex: Vec<_> = bytes.clone().take(2).collect();
-            if let Some(decoded) = std::str::from_utf8(&hex).ok().filter(|s| s.len() == 2).and_then(|s| u8::from_str_radix(s, 16).ok()) {
+            // The numeric parser also accepts a leading '+', which is not a percent escape.
+            if let Some(decoded) = std::str::from_utf8(&hex)
+                .ok()
+                .filter(|s| s.len() == 2 && s.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+            {
                 out.push(decoded);
                 bytes.nth(1);
                 continue;
@@ -301,6 +306,33 @@ mod tests {
         assert_eq!(target.destinations, [RemoteDestination::Named("café%20".into())], "decode exactly once");
         let localhost = uri(&file).replacen("file:///", "file://LOCALHOST/", 1);
         assert_eq!(std::path::Path::new(NativeOpenTarget::from_arg(&localhost).unwrap().path()), file.as_path());
+    }
+
+    #[test]
+    fn native_launch_keeps_malformed_percent_plus_names_literal() {
+        let dir = Directory::new();
+        let file = dir.file("manual.pdf");
+        for escape in ["%+5", "%+F", "%+0"] {
+            let name = format!("50{escape}off");
+            let target = NativeOpenTarget::from_arg(&format!("{}#nameddest={name}", uri(&file))).unwrap();
+            assert_eq!(target.destinations(), [RemoteDestination::Named(name)], "only two ASCII hex digits form an escape");
+        }
+        for escape in ["%2B", "%2b"] {
+            let target = NativeOpenTarget::from_arg(&format!("{}#nameddest=50{escape}5off", uri(&file))).unwrap();
+            assert_eq!(target.destinations(), [RemoteDestination::Named("50+5off".into())], "uppercase and lowercase hex remain valid");
+        }
+    }
+
+    #[test]
+    fn native_file_uris_keep_malformed_percent_plus_filenames_literal() {
+        let dir = Directory::new();
+        for escape in ["%+1", "%+F", "%+0"] {
+            let file = dir.file(&format!("manual{escape}.pdf"));
+            let malformed_uri = uri(&file).replace("%25", "%");
+            let target = NativeOpenTarget::from_arg(&malformed_uri).unwrap();
+            assert_eq!(std::path::Path::new(target.path()), file.as_path());
+            assert!(target.destinations().is_empty());
+        }
     }
 
     #[test]
