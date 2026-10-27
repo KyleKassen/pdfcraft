@@ -229,3 +229,8 @@ behavior. Back/Forward
 returns to page tops, does not restore zoom, does not switch documents, and is not saved across
 restarts. Standalone engine/MCP sessions have no viewport, so they do not have a separate
 navigation-history tool; use the opt-in UI control channel to navigate the displayed document.
+
+For PNG and JPEG inputs, `doc_create` and `page_add_image` preserve unitless pixel-aspect metadata when deriving natural dimensions.
+Unitless density uses a 72-dpi reference on the denser axis, expanding the other without resampling pixels.
+Supplying `doc_create.dpi` overrides both axes, preserving the existing explicit-DPI behavior.
+Saving and reopening keep the resulting geometry, while the source image stays unchanged.

@@ -108,6 +108,16 @@ fn jpeg_icc(mut chunks: Vec<(u8, u8, &[u8])>) -> Option<Vec<u8>> {
     complete.then(|| chunks.iter().flat_map(|c| c.2.iter().copied()).collect())
 }
 
+/// Unitless densities describe aspect only. Keep one point per pixel on the denser axis,
+/// expanding the other, so equivalent ratios have identical geometry regardless of scale.
+fn aspect_dpi(x: u32, y: u32) -> (f64, f64) {
+    if x == 0 || y == 0 {
+        return (72.0, 72.0);
+    }
+    let reference = f64::from(x.max(y));
+    (72.0 * (f64::from(x) / reference), 72.0 * (f64::from(y) / reference))
+}
+
 /// Add `img` to `doc` as an image XObject. An ICC profile becomes an `/ICCBased` colour space
 /// (with the device space as `/Alternate`); `profiles` shares one object between images that
 /// carry the same profile.
@@ -257,11 +267,12 @@ fn jpeg(name: &str, bytes: &[u8]) -> Result<Embedded, CreateError> {
         match marker {
             // APP0 JFIF density.
             0xE0 if seg.starts_with(b"JFIF\0") && seg.len() >= 12 => {
-                let (unit, x, y) = (seg[7], u16::from_be_bytes([seg[8], seg[9]]) as f64, u16::from_be_bytes([seg[10], seg[11]]) as f64);
-                if x > 0.0 && y > 0.0 {
+                let (unit, x, y) = (seg[7], u16::from_be_bytes([seg[8], seg[9]]), u16::from_be_bytes([seg[10], seg[11]]));
+                if x > 0 && y > 0 {
                     dpi = match unit {
-                        1 => (x, y),
-                        2 => (x * 2.54, y * 2.54),
+                        0 => aspect_dpi(u32::from(x), u32::from(y)),
+                        1 => (f64::from(x), f64::from(y)),
+                        2 => (f64::from(x) * 2.54, f64::from(y) * 2.54),
                         _ => dpi,
                     };
                 }
@@ -312,6 +323,7 @@ fn png_image(name: &str, bytes: &[u8]) -> Result<Embedded, CreateError> {
     let mut reader = dec.read_info().map_err(|e| bad(e.to_string()))?;
     let dpi = match reader.info().pixel_dims {
         Some(png::PixelDimensions { xppu, yppu, unit: png::Unit::Meter }) if xppu > 0 && yppu > 0 => (xppu as f64 * 0.0254, yppu as f64 * 0.0254),
+        Some(png::PixelDimensions { xppu, yppu, unit: png::Unit::Unspecified }) => aspect_dpi(xppu, yppu),
         _ => (72.0, 72.0),
     };
     let icc = reader.info().icc_profile.as_ref().map(|p| p.to_vec());
@@ -573,7 +585,7 @@ fn embed(name: &str, bytes: &[u8], wanted: usize) -> Result<Vec<Embedded>, Creat
 }
 
 /// Embed an image file (its first page, for TIFFs) as an image XObject in `doc`. Returns the
-/// object and the image's natural size in points (from its resolution).
+/// object and the image's natural size in points (from its resolution or unitless pixel aspect).
 pub fn image_xobject(doc: &mut Document, name: &str, bytes: &[u8]) -> Result<(ObjRef, (f64, f64)), CreateError> {
     let img = embed(name, bytes, 1)?.into_iter().next().ok_or_else(|| CreateError::Image(name.into(), "the file has no image".into()))?;
     let size = (img.px.0 as f64 * 72.0 / img.dpi.0, img.px.1 as f64 * 72.0 / img.dpi.1);
@@ -583,7 +595,8 @@ pub fn image_xobject(doc: &mut Document, name: &str, bytes: &[u8]) -> Result<(Ob
 /// Resolution used to size PDF pages. Image pixels are never resampled.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ImageResolution {
-    /// Embedded resolution, falling back to 72 dpi when absent.
+    /// Embedded resolution, or unitless pixel aspect with a 72-dpi reference on the denser axis.
+    /// Falls back to 72 dpi on both axes when neither is supplied.
     #[default]
     Embedded,
     /// Override both axes with a finite resolution between 1 and 1200 dpi.
@@ -622,7 +635,12 @@ pub fn from_images_with_resolution(images: &[(String, Vec<u8>)], resolution: Ima
         xobj.set(b"Im0".to_vec(), Object::Ref(xr));
         let mut res = Dict::new();
         res.set(b"XObject".to_vec(), Object::Dict(xobj));
-        let content = format!("q {w:.3} 0 0 {h:.3} 0 0 cm /Im0 Do Q\n").into_bytes();
+        let mut content = b"q ".to_vec();
+        // The page box and placement need the same precision, including tiny positive axes.
+        pdfcraft_cos::serialize(&Object::Real(w), &mut content);
+        content.extend_from_slice(b" 0 0 ");
+        pdfcraft_cos::serialize(&Object::Real(h), &mut content);
+        content.extend_from_slice(b" 0 0 cm /Im0 Do Q\n");
         add_page(&mut doc, w, h, res, Some(content))?;
     }
     if let Some((name, _)) = images.first() {
