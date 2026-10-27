@@ -226,8 +226,16 @@ impl Walk<'_> {
             self.complete = false;
             return;
         };
-        let placement = annot.get(b"Rect").and_then(|rect| geometry(doc, rect)).and_then(|rect| appearance_placement(doc, &form.dict, rect));
-        let Some(placement) = placement else {
+        let Some(rect) = annot.get(b"Rect").and_then(|rect| geometry(doc, rect)) else {
+            self.complete = false;
+            return;
+        };
+        // Invisible signature widgets commonly have a zero-area rectangle and BBox.
+        // They cannot draw an image at a larger size, so they do not make the walk incomplete.
+        if rect[0] == rect[2] || rect[1] == rect[3] {
+            return;
+        }
+        let Some(placement) = appearance_placement(doc, &form.dict, rect) else {
             self.complete = false;
             return;
         };

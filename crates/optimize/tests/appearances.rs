@@ -267,3 +267,51 @@ fn annotations_without_appearances_do_not_disable_page_downsampling() {
     settings.gray.compression = Compression::Flate;
     assert_eq!(optimize(&mut doc, &settings).unwrap().images_resampled, 1);
 }
+
+#[test]
+fn zero_area_signature_appearances_do_not_block_downsampling() {
+    for rect in [[0.0, 0.0, 0.0, 0.0], [80.0, 80.0, 80.0, 440.0], [80.0, 80.0, 440.0, 80.0]] {
+        for empty_bbox in [false, true] {
+            let (mut doc, image, form, annot) = fixture();
+            let page = pdfcraft_model::pages(&doc)[0].obj;
+            let root = doc.root().unwrap();
+            let mut fields = Dict::new();
+            fields.set(b"Fields".to_vec(), Object::Array(vec![Object::Ref(annot)]));
+            doc.update_dict(root, |d| d.set(b"AcroForm".to_vec(), Object::Dict(fields))).unwrap();
+            doc.update_dict(annot, |d| {
+                d.set(b"Subtype".to_vec(), Object::name("Widget"));
+                d.set(b"FT".to_vec(), Object::name("Sig"));
+                d.set(b"Rect".to_vec(), numbers(&rect));
+            })
+            .unwrap();
+            if empty_bbox {
+                let Object::Stream(mut appearance) = doc.get(form).as_ref().clone() else { panic!() };
+                appearance.dict.set(b"BBox".to_vec(), numbers(&[0.0, 0.0, 0.0, 0.0]));
+                doc.set(form, appearance);
+            }
+            assert_eq!(effective_resolutions(&doc, &[page]).get(&image), Some(&1440.0), "rect={rect:?}, empty_bbox={empty_bbox}");
+            let mut settings = Settings::default();
+            settings.gray.compression = Compression::Flate;
+            assert_eq!(optimize(&mut doc, &settings).unwrap().images_resampled, 1);
+            let Object::Stream(image) = doc.get(image).as_ref().clone() else { panic!() };
+            assert_eq!(image.dict.int(b"Width"), Some(75));
+        }
+    }
+}
+
+#[test]
+fn invalid_appearance_rectangles_still_disable_downsampling() {
+    for rect in [Object::Null, numbers(&[0.0, 0.0, 1.0]), numbers(&[0.0, 0.0, f64::INFINITY, 1.0]), numbers(&[0.0, 0.0, f64::NAN, 1.0])] {
+        let (mut doc, image, _, annot) = fixture();
+        let page = pdfcraft_model::pages(&doc)[0].obj;
+        doc.update_dict(annot, |d| d.set(b"Rect".to_vec(), rect)).unwrap();
+        assert_eq!(effective_resolutions(&doc, &[page]).get(&image), Some(&f64::INFINITY));
+    }
+    let (mut doc, image, _, annot) = fixture();
+    let page = pdfcraft_model::pages(&doc)[0].obj;
+    doc.update_dict(annot, |d| {
+        d.remove(b"Rect");
+    })
+    .unwrap();
+    assert_eq!(effective_resolutions(&doc, &[page]).get(&image), Some(&f64::INFINITY));
+}
