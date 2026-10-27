@@ -1401,3 +1401,5 @@ fn a_tiny_gif_on_a_huge_screen_is_refused() {
     let doc = reopen(&from_images(&[("small.gif".into(), gif_on_screen(40, 30))]).unwrap());
     assert_eq!(media(&pages(&doc)[0]), [0.0, 0.0, 40.0, 30.0]);
 }
+
+mod tiff_aspect;

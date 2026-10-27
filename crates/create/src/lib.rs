@@ -110,12 +110,12 @@ fn jpeg_icc(mut chunks: Vec<(u8, u8, &[u8])>) -> Option<Vec<u8>> {
 
 /// Unitless densities describe aspect only. Keep one point per pixel on the denser axis,
 /// expanding the other, so equivalent ratios have identical geometry regardless of scale.
-fn aspect_dpi(x: u32, y: u32) -> (f64, f64) {
-    if x == 0 || y == 0 {
+fn aspect_dpi(x: f64, y: f64) -> (f64, f64) {
+    if !x.is_finite() || !y.is_finite() || x <= 0.0 || y <= 0.0 {
         return (72.0, 72.0);
     }
-    let reference = f64::from(x.max(y));
-    (72.0 * (f64::from(x) / reference), 72.0 * (f64::from(y) / reference))
+    let reference = x.max(y);
+    (72.0 * (x / reference), 72.0 * (y / reference))
 }
 
 /// Add `img` to `doc` as an image XObject. An ICC profile becomes an `/ICCBased` colour space
@@ -270,7 +270,7 @@ fn jpeg(name: &str, bytes: &[u8]) -> Result<Embedded, CreateError> {
                 let (unit, x, y) = (seg[7], u16::from_be_bytes([seg[8], seg[9]]), u16::from_be_bytes([seg[10], seg[11]]));
                 if x > 0 && y > 0 {
                     dpi = match unit {
-                        0 => aspect_dpi(u32::from(x), u32::from(y)),
+                        0 => aspect_dpi(f64::from(x), f64::from(y)),
                         1 => (f64::from(x), f64::from(y)),
                         2 => (f64::from(x) * 2.54, f64::from(y) * 2.54),
                         _ => dpi,
@@ -323,7 +323,7 @@ fn png_image(name: &str, bytes: &[u8]) -> Result<Embedded, CreateError> {
     let mut reader = dec.read_info().map_err(|e| bad(e.to_string()))?;
     let dpi = match reader.info().pixel_dims {
         Some(png::PixelDimensions { xppu, yppu, unit: png::Unit::Meter }) if xppu > 0 && yppu > 0 => (xppu as f64 * 0.0254, yppu as f64 * 0.0254),
-        Some(png::PixelDimensions { xppu, yppu, unit: png::Unit::Unspecified }) => aspect_dpi(xppu, yppu),
+        Some(png::PixelDimensions { xppu, yppu, unit: png::Unit::Unspecified }) => aspect_dpi(f64::from(xppu), f64::from(yppu)),
         _ => (72.0, 72.0),
     };
     let icc = reader.info().icc_profile.as_ref().map(|p| p.to_vec());
@@ -453,17 +453,27 @@ fn tiff_pages_within(name: &str, bytes: &[u8], wanted: usize, budget: usize) -> 
         let (w, h) = dec.dimensions().map_err(|e| bad(e.to_string()))?;
         let ct = dec.colortype().map_err(|e| bad(e.to_string()))?;
         let unit = dec.get_tag_u32(Tag::ResolutionUnit).unwrap_or(2);
-        let res = |t: Tag, dec: &mut Decoder<std::io::Cursor<&[u8]>>| -> f64 {
-            // Resolutions are rationals.
-            let v = match dec.get_tag(t) {
-                Ok(tiff::decoder::ifd::Value::Rational(n, d)) if d != 0 => f64::from(n) / f64::from(d),
-                Ok(other) => other.into_f64().unwrap_or(72.0),
-                Err(_) => 72.0,
-            };
-            let v = if unit == 3 { v * 2.54 } else { v };
-            if v.is_finite() && v >= 1.0 { v } else { 72.0 }
+        let res = |t: Tag, dec: &mut Decoder<std::io::Cursor<&[u8]>>| -> Option<f64> {
+            match dec.get_tag(t) {
+                Ok(tiff::decoder::ifd::Value::Rational(n, d)) if d != 0 => Some(f64::from(n) / f64::from(d)),
+                // Keep the existing absolute-DPI compatibility for other numeric tag types.
+                Ok(other) if unit != 1 => other.into_f64().ok(),
+                _ => None,
+            }
         };
-        let dpi = (res(Tag::XResolution, &mut dec), res(Tag::YResolution, &mut dec));
+        let raw = (res(Tag::XResolution, &mut dec), res(Tag::YResolution, &mut dec));
+        let dpi = if unit == 1 {
+            // TIFF unit 1 describes aspect, including valid fractions below one.
+            // A missing or malformed pair has no usable aspect: keep square pixels.
+            aspect_dpi(raw.0.unwrap_or(0.0), raw.1.unwrap_or(0.0))
+        } else {
+            let absolute = |value: Option<f64>| {
+                let value = value.unwrap_or(72.0);
+                let value = if unit == 3 { value * 2.54 } else { value };
+                if value.is_finite() && value >= 1.0 { value } else { 72.0 }
+            };
+            (absolute(raw.0), absolute(raw.1))
+        };
         let data = match dec.read_image().map_err(|e| bad(e.to_string()))? {
             DecodingResult::U8(v) => v,
             // 16-bit samples: keep the high byte.

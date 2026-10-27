@@ -230,7 +230,9 @@ returns to page tops, does not restore zoom, does not switch documents, and is n
 restarts. Standalone engine/MCP sessions have no viewport, so they do not have a separate
 navigation-history tool; use the opt-in UI control channel to navigate the displayed document.
 
-For PNG and JPEG inputs, `doc_create` and `page_add_image` preserve unitless pixel-aspect metadata when deriving natural dimensions.
+For PNG, JPEG and TIFF inputs, `doc_create` and `page_add_image` preserve unitless pixel-aspect metadata when deriving natural dimensions.
 Unitless density uses a 72-dpi reference on the denser axis, expanding the other without resampling pixels.
+TIFF ResolutionUnit=1 uses paired positive per-directory rationals, including fractions below one; unusable pairs keep square pixels.
+TIFF inch and centimeter sizing keeps its existing interpretation.
 Supplying `doc_create.dpi` overrides both axes, preserving the existing explicit-DPI behavior.
 Saving and reopening keep the resulting geometry, while the source image stays unchanged.

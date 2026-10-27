@@ -24,7 +24,9 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
 
 Every function returns a `pdfcraft_cos::Document`; the caller writes it.
 
-PNG pHYs and JPEG JFIF densities without a physical unit preserve the declared pixel aspect ratio.
+PNG pHYs, JPEG JFIF and TIFF ResolutionUnit=1 densities without a physical unit preserve the declared pixel aspect ratio.
+TIFF uses the paired positive XResolution/YResolution rationals from each directory, including fractions below one.
+A missing, zero or malformed unitless TIFF pair keeps square pixels at 72 dpi.
 Their denser axis uses a 72-dpi reference and the other axis expands, so proportional density values produce identical natural page sizes.
 Missing or zero densities keep the square-pixel 72-dpi fallback; absolute meter, inch and centimeter densities keep their existing interpretation.
 An explicit `ImageResolution::Dpi` still overrides both axes, including any embedded aspect ratio.
