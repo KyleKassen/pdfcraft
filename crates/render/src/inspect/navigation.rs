@@ -22,13 +22,14 @@ pub(super) const NAME_DECODE_BYTES: usize = 16 << 20;
 pub(super) struct NameWalk {
     pub(super) remaining: usize,
     pub(super) complete: bool,
+    pub(super) exhausted: bool,
 }
 impl NameWalk {
     pub(super) fn new() -> Self {
-        Self { remaining: NAME_TREE_WORK, complete: true }
+        Self { remaining: NAME_TREE_WORK, complete: true, exhausted: false }
     }
     fn spend(&mut self) -> bool {
-        if !self.complete {
+        if self.exhausted {
             return false;
         }
         match self.remaining.checked_sub(1) {
@@ -38,6 +39,7 @@ impl NameWalk {
             }
             None => {
                 self.complete = false;
+                self.exhausted = true;
                 false
             }
         }
@@ -139,6 +141,7 @@ impl<'a> Inspector<'a> {
                     (name == key).then_some(value)
                 });
                 walk.complete &= !byte_limited;
+                walk.exhausted |= byte_limited;
                 self.query_work.set(walk);
                 if !walk.complete {
                     return Err(());
@@ -165,6 +168,7 @@ impl<'a> Inspector<'a> {
     fn limit_name_query(&self) {
         let mut work = self.query_work.get();
         work.complete = false;
+        work.exhausted = true;
         self.query_work.set(work);
     }
 
@@ -218,6 +222,7 @@ impl<'a> Inspector<'a> {
                     (text_string(key) == name).then_some(value)
                 });
                 walk.complete &= !decode_limited;
+                walk.exhausted |= decode_limited;
                 self.query_work.set(walk);
                 if !walk.complete {
                     return None;
@@ -237,6 +242,7 @@ impl<'a> Inspector<'a> {
             for (key, value) in legacy.iter() {
                 if !walk.spend() || !self.spend_name_decode(key) {
                     walk.complete = false;
+                    walk.exhausted = true;
                     break;
                 }
                 if text_string(key) == name {
@@ -250,7 +256,8 @@ impl<'a> Inspector<'a> {
         self.dest(value, 0).filter(|(page, _)| *page < self.page_ids.len())
     }
 
-    /// Shared first-occurrence traversal. Incomplete searches never authorize a fallback.
+    /// Collect readable entries without resetting global bounds after malformed input.
+    /// Strict query callers reject any incomplete traversal, including a found result.
     pub(super) fn visit_names(
         &self,
         node: &'a Dictionary,
@@ -267,49 +274,49 @@ impl<'a> Inspector<'a> {
             return None;
         }
         if let Ok(names) = node.get(b"Names") {
-            let Object::Array(pairs) = self.resolve(names) else {
-                walk.complete = false;
-                return None;
-            };
-            for pair in pairs.chunks(2) {
-                if !walk.spend() {
-                    return None;
-                }
-                let [key, value] = pair else {
-                    walk.complete = false;
-                    return None;
-                };
-                let key = match self.resolve(key) {
-                    Object::String(key, _) | Object::Name(key) => key,
-                    _ => {
-                        walk.complete = false;
+            if let Object::Array(pairs) = self.resolve(names) {
+                for pair in pairs.chunks(2) {
+                    if !walk.spend() {
                         return None;
                     }
-                };
-                if let Some(found) = visit(key, value) {
-                    return Some(found);
+                    let [key, value] = pair else {
+                        walk.complete = false;
+                        continue;
+                    };
+                    let key = match self.resolve(key) {
+                        Object::String(key, _) | Object::Name(key) => key,
+                        _ => {
+                            walk.complete = false;
+                            continue;
+                        }
+                    };
+                    if let Some(found) = visit(key, value) {
+                        return Some(found);
+                    }
                 }
+            } else {
+                walk.complete = false;
             }
         }
         if let Ok(kids) = node.get(b"Kids") {
-            let Object::Array(kids) = self.resolve(kids) else {
+            if let Object::Array(kids) = self.resolve(kids) {
+                for kid in kids {
+                    if !walk.spend() {
+                        return None;
+                    }
+                    let Some(dict) = self.dict(kid) else {
+                        walk.complete = false;
+                        continue;
+                    };
+                    if let Some(found) = self.visit_names(dict, seen, depth + 1, walk, visit) {
+                        return Some(found);
+                    }
+                    if walk.exhausted {
+                        return None;
+                    }
+                }
+            } else {
                 walk.complete = false;
-                return None;
-            };
-            for kid in kids {
-                if !walk.spend() {
-                    return None;
-                }
-                let Some(dict) = self.dict(kid) else {
-                    walk.complete = false;
-                    return None;
-                };
-                if let Some(found) = self.visit_names(dict, seen, depth + 1, walk, visit) {
-                    return Some(found);
-                }
-                if !walk.complete {
-                    return None;
-                }
             }
         }
         None
@@ -809,12 +816,12 @@ mod open_dest_tests {
         let inspector = super::Inspector::without_named_index(&doc);
         assert!(inspector.named.is_none(), "one query does not index every name");
         let tree = inspector.destination_tree().unwrap().unwrap();
-        let mut work = super::NameWalk { remaining: 1, complete: true };
+        let mut work = super::NameWalk { remaining: 1, ..super::NameWalk::new() };
         let result = inspector.visit_names(tree, &mut std::collections::HashSet::new(), 0, &mut work, &mut |_, value| Some(value));
         assert!(result.is_none());
         assert_eq!(work.remaining, 0);
         assert!(!work.complete);
-        let mut work = super::NameWalk { remaining: 2, complete: true };
+        let mut work = super::NameWalk { remaining: 2, ..super::NameWalk::new() };
         let result = inspector.visit_names(tree, &mut std::collections::HashSet::new(), 0, &mut work, &mut |_, value| Some(value));
         assert_eq!(inspector.dest(result.unwrap(), 0), Some((0, DestView::Fit)));
     }
@@ -875,5 +882,50 @@ mod open_dest_tests {
         let bytes = pdf("/Names << /Dests 6 0 R >>", &nodes);
         assert!(bytes.len() < 1024 * 1024);
         assert!(!matches!(crate::named_destination(Arc::new(bytes), None, &key), Ok(Some(_))));
+    }
+
+    #[test]
+    fn indexed_name_tree_keeps_readable_entries_after_damage() {
+        let cases = [
+            ("/Names << /Dests << /Names [17 [3 0 R /Fit] (good) [4 0 R /Fit]] >> >>", vec![]),
+            ("/Names << /Dests 6 0 R >>", vec!["<< /Kids [17 7 0 R] >>".into(), "<< /Names [(good) [4 0 R /Fit]] >>".into()]),
+            ("/Names << /Dests 6 0 R >>", vec!["<< /Names [(broken)] /Kids [7 0 R] >>".into(), "<< /Names [(good) [4 0 R /Fit]] >>".into()]),
+            ("/Names << /Dests 6 0 R >>", vec!["<< /Names 17 /Kids [7 0 R] >>".into(), "<< /Names [(good) [4 0 R /Fit]] >>".into()]),
+        ];
+        for (catalog, extra) in cases {
+            let bytes = Arc::new(pdf(&format!("/OpenAction (good) {catalog}"), &extra));
+            let info = inspect(bytes.clone(), None).unwrap();
+            assert_eq!(info.open_dest, Some((1, DestView::Fit)), "later readable entries survive: {catalog}");
+            assert!(info.warnings.iter().any(|warning| warning.contains("named destinations")));
+            assert!(!matches!(crate::named_destination(bytes, None, "good"), Ok(Some(_))), "strict queries still refuse preceding damage");
+        }
+    }
+
+    #[test]
+    fn indexed_name_tree_continues_after_a_depth_limited_branch() {
+        let depth = 40;
+        let good = 8 + depth;
+        let mut nodes = vec![format!("<< /Kids [7 0 R {good} 0 R] >>")];
+        nodes.extend((0..depth).map(|index| format!("<< /Kids [{} 0 R] >>", 8 + index)));
+        nodes.push("<< /Names [(deep) [3 0 R /Fit]] >>".into());
+        nodes.push("<< /Names [(good) [4 0 R /Fit]] >>".into());
+        let bytes = Arc::new(pdf("/OpenAction (good) /Names << /Dests 6 0 R >>", &nodes));
+        assert_eq!(inspect(bytes.clone(), None).unwrap().open_dest, Some((1, DestView::Fit)));
+        assert!(!matches!(crate::named_destination(bytes, None, "good"), Ok(Some(_))));
+    }
+
+    #[test]
+    fn indexed_name_tree_recovery_never_resets_the_work_allowance() {
+        let bytes = pdf("/Names << /Dests << /Names [17 [3 0 R /Fit] (good) [4 0 R /Fit]] >> >>", &[]);
+        let doc = lopdf::Document::load_mem(&bytes).unwrap();
+        let inspector = super::Inspector::without_named_index(&doc);
+        let tree = inspector.destination_tree().unwrap().unwrap();
+        let mut work = super::NameWalk { remaining: 2, ..super::NameWalk::new() };
+        let found = inspector.visit_names(tree, &mut std::collections::HashSet::new(), 0, &mut work, &mut |_, value| Some(value));
+        assert!(found.is_none());
+        assert_eq!(work.remaining, 0);
+        assert!(!work.complete);
+        let before_damage = Arc::new(pdf("/Names << /Dests << /Names [(good) [4 0 R /Fit] 17 [3 0 R /Fit]] >> >>", &[]));
+        assert!(matches!(crate::named_destination(before_damage, None, "good"), Ok(Some((1, DestView::Fit)))));
     }
 }

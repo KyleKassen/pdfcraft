@@ -178,6 +178,7 @@ fn query_destinations(inspector: &Inspector<'_>, names: &[&str]) -> Vec<NamedDes
                 Err(panic) => {
                     let mut work = inspector.query_work.get();
                     work.complete = false;
+                    work.exhausted = true;
                     inspector.query_work.set(work);
                     Err(OpenError::Invalid(format!("the destination parser crashed: {}", crate::raster::panic_message(&panic))))
                 }
@@ -268,7 +269,7 @@ impl<'a> Inspector<'a> {
 
     pub(super) fn fill(&self, info: &mut DocInfo) {
         if self.named_index_limited {
-            info.warnings.push("Some named destinations could not be indexed within the safe traversal limits.".into());
+            info.warnings.push("Some named destinations were skipped because the tree is malformed or exceeds safe traversal limits.".into());
         }
         // lopdf drops /Encrypt from the trailer once it has decrypted the file.
         info.encrypted = self.doc.encrypted();

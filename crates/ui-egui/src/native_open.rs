@@ -317,7 +317,8 @@ mod tests {
         assert!(NativeOpenTarget::from_arg(&format!("{}#{}", uri(&file), vec!["page=1"; MAX_DESTINATIONS + 1].join("&"))).is_err());
         assert!(NativeOpenTarget::from_arg(&"x".repeat(MAX_ARGUMENT_BYTES + 1)).is_err());
         assert!(NativeOpenTarget::from_arg("bad\0path.pdf").is_err());
-        assert_eq!(NativeOpenTarget::from_arg("file:///tmp/%zz.pdf").unwrap().path(), "/tmp/%zz.pdf");
+        let escaped = NativeOpenTarget::from_arg("file:///tmp/%zz.pdf").unwrap();
+        assert_eq!(std::path::Path::new(escaped.path()), std::path::absolute("/tmp/%zz.pdf").unwrap().as_path());
     }
     #[test]
     fn native_hash_filenames_choose_the_longest_existing_file_before_navigation() {

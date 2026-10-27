@@ -520,7 +520,12 @@ mod tests {
         let received = pdfcraft_ui_egui::NativeOpenTarget::from_arg(&normalized[0]).unwrap();
         assert_eq!(std::path::Path::new(received.path()), std::path::absolute("manual with spaces.pdf").unwrap());
         assert_eq!(received.destinations(), pdfcraft_ui_egui::NativeOpenTarget::from_arg(&plain).unwrap().destinations());
-        assert_eq!(normalized[1], uri);
+        let original = pdfcraft_ui_egui::NativeOpenTarget::from_arg(&uri).unwrap();
+        let received = pdfcraft_ui_egui::NativeOpenTarget::from_arg(&normalized[1]).unwrap();
+        assert_eq!(std::path::Path::new(received.path()), std::path::absolute("/tmp/manual#draft.pdf").unwrap().as_path());
+        assert_eq!(received.destinations(), original.destinations());
+        assert!(normalized[1].contains("%23"), "the filename hash remains escaped");
+        assert!(normalized[1].contains("%26"), "the destination separator remains escaped");
     }
     #[test]
     fn native_launch_protocol_is_not_accepted_as_legacy_literal_paths() {

@@ -56,5 +56,6 @@ An ambiguous plain argument is limited to 64 hash boundaries; a local file URI c
 A destination name is limited to 1,024 UTF-8 bytes.
 Malformed page numbers and invalid or oversized names are refused with a readable error.
 Missing or out-of-range destinations leave the document open and report a notice.
-Named lookup has depth, traversal, comparison and decoding budgets; an incomplete search does not choose a different fallback destination.
+On-demand named lookup has depth, traversal, comparison and decoding budgets; an incomplete search does not choose a different fallback destination.
+Ordinary document inspection retains readable destinations after malformed tree entries and reports a warning.
 The named-destinations editing panel and other PDF opening parameters remain separate work.
