@@ -10,6 +10,8 @@ Annotation appearances, tiling patterns, soft-mask groups and Type 3 fonts can s
 Their paint programs are not interpreted by this pruning pass, so their reachable resource owners are retained conservatively.
 All normal, rollover and pressed appearance states are protected, including inactive states and appearances on pages without page content.
 Resource-less paint also protects the caller's resources; discovery caches include that caller context.
+Paint-kind names and numbers are resolved when stored through indirect objects, including Type 3 and Form Subtype, soft-mask S and tiling PatternType.
+Primitive probes borrow direct values and fetch only indirect objects, preserving the traversal bounds for malformed containers.
 
 Graph protection is iterative and bounded to 10,000 resource objects/direct children per extraction, with reference cycles visited once per caller and paint role.
 Exhausting this budget skips pruning for the entire output rather than guessing that an image is unused.

@@ -61,6 +61,24 @@ struct Pruner<'a> {
 }
 
 impl Pruner<'_> {
+    /// Kind entries may reference primitive objects. Inspect direct values in place, and only
+    /// fetch an indirect value, so malformed direct containers are never cloned by a probe.
+    fn name_is(&self, value: Option<&Object>, expected: &[u8]) -> bool {
+        let Some(value) = value else { return false };
+        match value.as_ref() {
+            Some(reference) => self.doc.get(reference).as_name() == Some(expected),
+            None => value.as_name() == Some(expected),
+        }
+    }
+
+    fn integer_is(&self, value: Option<&Object>, expected: i64) -> bool {
+        let Some(value) = value else { return false };
+        match value.as_ref() {
+            Some(reference) => self.doc.get(reference).as_int() == Some(expected),
+            None => value.as_int() == Some(expected),
+        }
+    }
+
     /// Inspect direct containers in place; resolving a direct dictionary would clone it before
     /// the protection work budget has charged its children.
     fn usable_resources(&self, object: &Object) -> bool {
@@ -104,8 +122,8 @@ impl Pruner<'_> {
         while let Some((object, appearance)) = pending.pop() {
             if let Some(dict) = object.as_dict() {
                 let paint_stream = matches!(object, Object::Stream(_))
-                    && (appearance || dict.name(b"Subtype") == Some(b"Form") || dict.int(b"PatternType") == Some(1));
-                if (paint_stream || dict.name(b"Subtype") == Some(b"Type3"))
+                    && (appearance || self.name_is(dict.get(b"Subtype"), b"Form") || self.integer_is(dict.get(b"PatternType"), 1));
+                if (paint_stream || self.name_is(dict.get(b"Subtype"), b"Type3"))
                     && !dict.get(b"Resources").is_some_and(|resources| self.usable_resources(resources))
                 {
                     inherits = true;
@@ -136,7 +154,7 @@ impl Pruner<'_> {
                         // Appearance dictionaries contain N/R/D and named states. Once a
                         // stream is reached, its dictionary holds ordinary resource/data graphs.
                         let child_appearance = appearance && !matches!(object, Object::Stream(_));
-                        let soft_mask = matches!(dict.name(b"S"), Some(b"Luminosity" | b"Alpha"));
+                        let soft_mask = self.name_is(dict.get(b"S"), b"Luminosity") || self.name_is(dict.get(b"S"), b"Alpha");
                         pending.extend(dict.iter().map(|(key, value)| (value, child_appearance || (soft_mask && key.as_slice() == b"G"))));
                     }
                 }
@@ -227,7 +245,9 @@ impl Pruner<'_> {
             }
             let font_ref = font.as_ref();
             let resolved = font_ref.map(|reference| self.doc.get(reference));
-            let Some(font) = resolved.as_deref().unwrap_or(font).as_dict().filter(|f| f.name(b"Subtype") == Some(b"Type3")) else { continue };
+            let Some(font) = resolved.as_deref().unwrap_or(font).as_dict().filter(|font| self.name_is(font.get(b"Subtype"), b"Type3")) else {
+                continue;
+            };
             if let Some(glyph_resources) = font.get(b"Resources").filter(|resources| self.usable_resources(resources)) {
                 if let Some(r) = font_ref
                     && !self.glyph_fonts.insert((r, owner))
@@ -274,7 +294,7 @@ impl Pruner<'_> {
             self.used.entry(key).or_default().insert(name.to_vec());
             let Some(r) = xobjects.get(name).and_then(Object::as_ref) else { continue };
             let Object::Stream(s) = &*self.doc.get(r) else { continue };
-            if s.dict.name(b"Subtype") != Some(b"Form") {
+            if !self.name_is(s.dict.get(b"Subtype"), b"Form") {
                 continue;
             }
             let (inner, inner_owner) = match s.dict.get(b"Resources") {
