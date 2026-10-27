@@ -2375,6 +2375,7 @@ fn detection_finds_blanks_rules_boxes_and_names_them() {
     assert!(again.is_empty(), "{again:?}");
 }
 
+/// Equal touching answer cells become one labelled comb; separated squares and table cells do not.
 #[test]
 fn detection_makes_a_row_of_touching_cells_one_comb_field() {
     use crate::detect::*;
@@ -2473,6 +2474,7 @@ fn detection_bounds_rtl_label_groups_and_preserves_ltr_labels() {
     );
 }
 
+/// Detection reads answer boxes and horizontal rules from both rectangle and segment paths.
 #[test]
 fn page_shapes_reads_boxes_and_rules() {
     let mut doc = fixture();

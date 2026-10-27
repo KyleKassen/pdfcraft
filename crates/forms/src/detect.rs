@@ -358,7 +358,6 @@ fn label_for(words: &[Word], rect: [f64; 4], right_of: bool) -> String {
 /// Rows of two or more touching cells of one size, as (the row's rect, cell count). Two is
 /// enough: dates split into day and month groups of two cells. Cells are square or taller
 /// than wide; an empty table of wider cells is not a comb.
-/// Group aligned, touching answer cells into a comb field and retain its character count.
 fn combs(boxes: &[[f64; 4]]) -> Vec<([f64; 4], usize)> {
     let cells: Vec<[f64; 4]> = boxes
         .iter()
