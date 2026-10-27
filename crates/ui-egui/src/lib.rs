@@ -62,6 +62,10 @@ use theme::{ThemeKind, ThemePreference};
 
 mod app;
 mod hooks;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_open;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_open::NativeOpenTarget;
 mod persist;
 mod platform;
 mod state;
@@ -224,7 +228,7 @@ struct PendingOpen {
     path: Option<String>,
     stamp: Option<file_watch::Stamp>,
     activate: bool,
-    after_open: Option<pdfcraft_render::RemoteDestination>,
+    after_open: Vec<pdfcraft_render::RemoteDestination>,
     recovered: Option<RecoveryMeta>,
     then: Option<&'static str>,
 }

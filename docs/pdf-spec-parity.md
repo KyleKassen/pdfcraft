@@ -1,5 +1,6 @@
 # PDF specification and standards parity
 
+> **Last reviewed:** 2026-10-27 | **Last updated:** 2026-10-27 | **Change:** minor (M3: desktop launch and remote-link named destinations use bounded lookup; remaining opening parameters and estimates unchanged)
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (§14.3: custom properties edited in Document Properties) · **Target:** Adobe Acrobat Pro (Acrobat DC, continuous track 26.002.21931, macOS)
 
 How much of ISO 32000-2 (PDF 2.0) and the PDF subset standards PdfCraft implements, set against
@@ -81,7 +82,7 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 | Action | Acrobat | PdfCraft |
 |---|---|---|
 | GoTo | yes | yes (page with Fit; named destinations and zoom partial) |
-| GoToR | yes | partial: local PDF paths open in a PdfCraft tab; `/F` strings and file-spec dictionaries (`/UF`, then `/F`), source-relative paths, and explicit numeric-page destinations are supported. Automation uses the same resolver and `--root` confinement. Named destinations open at the target's default view with a warning; `/NewWindow` is a tab hint. Network/URL file systems are refused. |
+| GoToR | yes | partial: local PDF paths open in a PdfCraft tab; `/F` strings and file-spec dictionaries (`/UF`, then `/F`), source-relative paths, and explicit numeric-page destinations are supported. Automation uses the same resolver and `--root` confinement. Desktop named destinations resolve through bounded lookup; standalone `link_open` reports their names without a viewport; `/NewWindow` is a tab hint. Network/URL file systems are refused. |
 | GoToE | yes | none (preserved; the Optimizer can remove invalid ones) |
 | Launch | yes (restricted) | none |
 | Thread | yes | none |
@@ -127,6 +128,9 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 | **All subset standards** | | | **65–115** (gap 9) |
 
 ## Revision history
+
+**2026-10-27 | minor:** Desktop launch destinations and local remote-link named destinations share bounded lookup.
+Other opening parameters and parity estimates are unchanged.
 
 | Date | Change | Summary |
 |---|---|---|
