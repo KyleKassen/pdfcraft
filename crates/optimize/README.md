@@ -43,6 +43,8 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   Named destinations used by the catalog's opening view are retained, including direct and indirect names or strings in either destination storage format.
   Local GoTo actions retain their named targets when `S` is indirect, following up to 64 references with cycle detection for opening actions, links and bookmarks.
   Remote GoToR/GoToE actions and unusable subtypes do not keep coincidentally named local destinations.
+  A bare name or string under a private nested `OpenAction` key does not count as the catalog's opening view.
+  The existing conservative scan still retains destinations referenced by `Dest` entries or recognized local GoTo `D` entries anywhere, including private extension dictionaries.
   This extends optimizer cleanup; the viewer retains its existing action-resolution limits.
 
 The engine runs Remove Hidden Information (`pdfcraft-redact`) for the user-data categories,
