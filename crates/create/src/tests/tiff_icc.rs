@@ -200,3 +200,22 @@ fn tiff_icc_missing_malformed_and_mismatched_profiles_keep_device_color() {
         assert_eq!(image.data, [90, 80, 70]);
     }
 }
+
+#[test]
+fn tiff_icc_rejects_profiles_with_mismatched_declared_size() {
+    let profile = icc_profile(b"RGB ");
+    for declared_size in [128usize, profile.len() - 1, profile.len() + 1, profile.len()] {
+        let mut candidate = profile.clone();
+        candidate[..4].copy_from_slice(&(declared_size as u32).to_be_bytes());
+        let bytes = tagged_tiff(2, 3, 8, &[90, 80, 70], Some(&candidate));
+        let image = embed("size-mismatch.tiff", &bytes, 1).unwrap().remove(0);
+
+        if declared_size == profile.len() {
+            assert_eq!(image.icc, Some(profile.clone()), "a matching declared size retains the profile");
+        } else {
+            assert!(image.icc.is_none(), "declared size {declared_size} must be rejected");
+            assert_eq!(image.dict.name(b"ColorSpace"), Some(&b"DeviceRGB"[..]));
+        }
+        assert_eq!(image.data, [90, 80, 70], "profile validation must not alter source samples");
+    }
+}

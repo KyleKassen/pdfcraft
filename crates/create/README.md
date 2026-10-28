@@ -14,6 +14,7 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
   still fall back to the device colour space.
   TIFF profiles are read directly as bounded bytes (at most 16 MiB each) and count toward the retained TIFF-page budget.
   Declared profiles larger than the source file are rejected before allocation or profile I/O.
+  The ICC header size must equal the complete TIFF profile value count before allocation.
   Profiled RGBA keeps RGB samples even when the channel values are equal; opacity stays in an untagged grayscale soft mask.
   Missing, unreadable, over-limit or incompatible TIFF profiles keep the device colour space;
 - `from_images_with_resolution(images, ImageResolution::Dpi(dpi))`: override the page

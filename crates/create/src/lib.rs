@@ -436,6 +436,11 @@ fn tiff_icc(dec: &mut tiff::decoder::Decoder<std::io::Cursor<&[u8]>>, components
     if !matches!(entry.field_type(), Type::BYTE | Type::UNDEFINED) || !(128..=MAX_TIFF_ICC_BYTES.min(file_len)).contains(&len) {
         return None;
     }
+    // ICC's size includes its header and internal padding, matching the complete TIFF value.
+    let mut size = [0; 4];
+    if ifd.find_tag_bytes(Tag::IccProfile, &mut size, 0).ok()?? != size.len() || usize::try_from(u32::from_be_bytes(size)).ok()? != len {
+        return None;
+    }
     let mut profile = Vec::new();
     profile.try_reserve_exact(len).ok()?;
     profile.resize(len, 0);
