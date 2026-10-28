@@ -5,7 +5,7 @@
 //! remains the compatibility fallback. When neither can inspect a renderable file, panels
 //! are empty and `warnings` says why.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
