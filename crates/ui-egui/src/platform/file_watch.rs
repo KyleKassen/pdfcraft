@@ -806,6 +806,8 @@ mod tests {
     fn cancelled_disk_reload_confirmation_keeps_edits_recovery_and_external_bytes() {
         let (dir, path, external, mut h) = dirty_reload_case("reload-cancel");
         let app = h.state_mut();
+        // Keep repeated dirty-document serializations byte-stable across wall-clock seconds.
+        app.session = std::mem::take(&mut app.session).with_clock(|| 1_700_000_000);
         let id = app.views[0].id;
         app.enable_recovery(crate::RecoveryStore::new(dir.0.join("recovery")));
         app.autosave_now();
