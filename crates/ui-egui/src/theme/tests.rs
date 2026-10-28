@@ -126,13 +126,17 @@ fn galley(fonts: &mut Fonts, family: FontFamily, size: f32, ppp: f32, text: &str
 }
 
 fn hinting_test_fonts(platform: FontPolicyPlatform) -> Fonts {
+    hinting_test_fonts_with_definitions(font_definitions_for_platform(false, platform))
+}
+
+fn hinting_test_fonts_with_definitions(definitions: FontDefinitions) -> Fonts {
     Fonts::new(
         TextOptions {
             subpixel_binning: false,
             color_transfer_function: egui::epaint::FontColorTransferFunction::Gamma(0.75),
             ..TextOptions::default()
         },
-        font_definitions_for_platform(false, platform),
+        definitions,
     )
 }
 
@@ -151,14 +155,12 @@ fn glyph_ink_height(fonts: &mut Fonts, family: FontFamily, size: f32, ppp: f32, 
 /// the font outline's 9.82 pixels. Fractional scales and Retina Auto looked normal.
 /// Compare the raster against the bundled font's unhinted glyph bounds, allowing
 /// one pixel of raster rounding, rather than pinning a particular hinting flag.
-#[test]
-fn macos_embedded_glyph_heights_follow_font_outlines_at_ui_scales() {
+fn assert_primary_glyph_heights_follow_outlines(definitions: FontDefinitions) {
     use skrifa::{
         MetadataProvider as _,
         instance::{LocationRef, Size},
     };
-    let definitions = font_definitions_for_platform(false, FontPolicyPlatform::MacOs);
-    let mut fonts = hinting_test_fonts(FontPolicyPlatform::MacOs);
+    let mut fonts = hinting_test_fonts_with_definitions(definitions.clone());
     for (family, name) in primary_families() {
         let data = &definitions.font_data[name];
         let face = skrifa::FontRef::from_index(data.font.as_ref().as_ref(), data.index).unwrap();
@@ -178,6 +180,19 @@ fn macos_embedded_glyph_heights_follow_font_outlines_at_ui_scales() {
             }
         }
     }
+}
+
+#[test]
+fn macos_embedded_glyph_heights_follow_font_outlines_at_ui_scales() {
+    assert_primary_glyph_heights_follow_outlines(font_definitions_for_platform(false, FontPolicyPlatform::MacOs));
+}
+
+/// Exercise the production selector as well as the injectable policy: routing
+/// macOS to `Other` must expose the same raster defect to this test.
+#[cfg(target_os = "macos")]
+#[test]
+fn native_macos_font_definitions_keep_glyph_proportions() {
+    assert_primary_glyph_heights_follow_outlines(font_definitions_for(false));
 }
 
 #[test]
