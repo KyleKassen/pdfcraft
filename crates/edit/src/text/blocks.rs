@@ -1,13 +1,14 @@
 use super::interp::{Carry, interpret};
-use super::lines::{content_streams, page_dict, reading_lines, rewritten_contents, splice, text_lines};
+use super::lines::{content_streams, page_dict, rewritten_contents, splice, text_lines};
 use super::rewrite::{LineEdit, coincident_ops, rewrite_block};
-use super::{Document, EditError, HashMap, Object, Op, Pieces, TextLine, group_blocks, regions};
+use super::{Document, EditError, HashMap, Object, Op, Pieces, TextLine, group_blocks};
 
 /// An editable text region: adjacent runs on visual rows, followed by aligned rows.
 /// A region may contain several source fonts, sizes, colours and weights.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextBlock {
-    /// The lines' text joined with spaces (lines that ended in a hyphen are joined directly).
+    /// The lines' text joined with spaces, dehyphenating ordinary source rows.
+    /// Read-only logical replacements preserve their supplied whitespace and hyphens.
     pub text: String,
     pub rect: [f64; 4],
     pub base_font: String,
@@ -315,7 +316,8 @@ pub struct ReadingBlocks {
     /// [`MAX_FORM_VISITS`], or forms that run past what the page's content left of its decode
     /// budget. Reading leaves those forms out to stay bounded on hostile files, so their text
     /// is missing from `blocks`; [`crate::reading_images`] walks the same forms and misses
-    /// their images too.
+    /// their images too. Also true when structure-element replacement text cannot be safely
+    /// resolved or placed; those runs retain their original/marked-content text instead.
     pub truncated: bool,
 }
 
@@ -323,8 +325,7 @@ pub struct ReadingBlocks {
 /// whose `/Contents` alone runs past its decode budget is an [`EditError::Invalid`], not a
 /// truncated result.
 pub fn reading_blocks_checked(doc: &Document, page: usize) -> Result<ReadingBlocks, EditError> {
-    let (lines, truncated) = reading_lines(doc, page)?;
-    Ok(ReadingBlocks { blocks: regions::group_reading_blocks(&lines), truncated })
+    super::reading::ReadingContext::new(doc).blocks(page)
 }
 
 // An ideographic space carries intentional Japanese spacing, including paragraph indentation.
