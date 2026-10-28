@@ -172,12 +172,15 @@ mod browser {
     }
 
     impl Intake {
+        /// Report a failed launch to the console and bounded notice queue, then wake the UI.
         fn report(&self, name: &str, error: &'static str) {
             eframe::web_sys::console::error_1(&format!("PdfCraft: could not open {}: {error}", display_name(name)).into());
             queue_failure(&self.failed, name, error);
             self.ctx.request_repaint();
         }
 
+        /// Check whether one incoming file fits the existing startup inbox limits.
+        /// This does not reserve a slot; enqueue checks again after browser reads.
         fn check_inbox(&self, incoming: usize) -> Result<(), &'static str> {
             let inbox =
                 self.inbox.lock().map_err(|_| "The document-open queue is unavailable. Save your current work, reopen the app, and try again.")?;
@@ -317,6 +320,7 @@ mod tests {
         OVERFLOW_NOTICE, Pending, check_pending_budget, check_startup_budget, checked_buffer_size, checked_file_size, display_name, record_failure,
     };
 
+    /// Rejects invalid browser sizes and buffers that exceed or disagree with the checked size.
     #[test]
     fn file_and_buffer_sizes_are_integral_bounded_and_consistent() {
         for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.5, f64::MAX] {
@@ -333,6 +337,7 @@ mod tests {
         assert!(checked_buffer_size(0, u32::MAX).is_err());
     }
 
+    /// Counts existing inbox entries toward file and byte limits and refuses overflow.
     #[test]
     fn queued_bytes_and_files_include_existing_entries_without_overflow() {
         assert_eq!(check_startup_budget([], MAX_FILE_BYTES), Ok(()));
@@ -347,6 +352,7 @@ mod tests {
         assert!(check_startup_budget([MAX_QUEUED_BYTES], 1).is_err());
     }
 
+    /// Counts queued, in-flight, and incoming handles together without arithmetic wraparound.
     #[test]
     fn pending_accounting_includes_inflight_and_rejects_overflow() {
         assert_eq!(check_pending_budget(0, false, MAX_PENDING_HANDLES), Ok(()));
@@ -356,6 +362,7 @@ mod tests {
         assert!(check_pending_budget(1, false, usize::MAX).is_err());
     }
 
+    /// Preserves FIFO order when callbacks arrive during a read, including failed reads.
     #[test]
     fn one_reader_preserves_fifo_across_callbacks_failure_completion_and_restart() {
         let mut pending = Pending::new();
@@ -370,6 +377,7 @@ mod tests {
         assert_eq!(pending.finish(), None);
     }
 
+    /// Refuses an over-limit batch without dropping items already admitted to the queue.
     #[test]
     fn a_refused_pending_batch_keeps_all_prior_items() {
         let mut pending = Pending::new();
@@ -381,6 +389,7 @@ mod tests {
         assert_eq!(pending.finish(), None);
     }
 
+    /// Bounds launch notices while retaining notices produced by other intake paths.
     #[test]
     fn launch_notices_are_bounded_without_replacing_other_producers() {
         let foreign = ("URL.pdf".to_string(), "HTTP 404".to_string());
@@ -403,6 +412,7 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Recovers queued notices after mutex poisoning so the normal UI drain can read them.
     #[test]
     fn recovered_failure_queue_is_readable_and_keeps_existing_errors() {
         let existing = ("URL.pdf".to_string(), "HTTP 404".to_string());
@@ -418,6 +428,7 @@ mod tests {
         assert_eq!(*failed.lock().unwrap(), vec![existing, ("launched.pdf".to_string(), "Read failed.".to_string())]);
     }
 
+    /// Checks Unicode limits, control normalization, PDF suffixes, and the empty-name fallback.
     #[test]
     fn display_names_are_unicode_bounded_and_preserve_the_pdf_suffix() {
         assert_eq!(display_name("ordinary.pdf"), "ordinary.pdf");

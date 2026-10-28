@@ -351,6 +351,8 @@ impl eframe::App for PdfCraftApp {
 
     /// Each frame's work before drawing: opens, operating-system and control-channel requests,
     /// the quit guard, shortcuts, and the background jobs' results.
+    /// Admit one startup-inbox file per pass when its existing opening/modal guards permit it.
+    /// Request another frame after admission so a failed open does not stall the remaining queue.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ctx = Some(ctx.clone());
         #[cfg(not(target_arch = "wasm32"))]

@@ -1010,6 +1010,7 @@ fn ukrainian_preferences_and_search_keep_command_ids() {
     assert_eq!(state["documents"][0]["name"], "doc.pdf");
 }
 
+/// Checks language changes through the platform-specific Settings/Preferences menu and keyboard shortcut.
 #[test]
 fn preferences_menu_and_shortcut_allow_switching_interface_languages() {
     if crate::support::skip_without_glyphs("preferences_menu_and_shortcut_allow_switching_interface_languages", "ja", "") {

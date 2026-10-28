@@ -834,6 +834,7 @@ fn a_startup_batch_keeps_its_first_password_prompt_and_remaining_files() {
     }
 }
 
+/// Reports a malformed queued PDF and continues opening later valid files in FIFO order.
 #[test]
 fn a_broken_startup_file_does_not_block_or_reorder_later_files() {
     let mut h = harness(&[]);

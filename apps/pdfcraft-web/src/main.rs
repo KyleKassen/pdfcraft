@@ -6,6 +6,7 @@
 #[cfg(any(target_arch = "wasm32", test))]
 mod file_launch;
 
+/// Start the browser app and register URL, installed-file, unload, and optional host handling.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     use eframe::wasm_bindgen::JsCast;

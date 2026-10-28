@@ -1,6 +1,7 @@
 //! Packaging contracts for the installed browser app and its PDF file handler.
 use std::path::Path;
 
+/// Keeps the installed manifest, PDF handler, and copied icons within the hosting prefix.
 #[test]
 fn the_installed_web_app_declares_an_in_scope_pdf_file_handler() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -31,6 +32,7 @@ fn the_installed_web_app_declares_an_in_scope_pdf_file_handler() {
     }
 }
 
+/// Leaves the manifest id unset so its prefix-local start URL determines app identity.
 #[test]
 fn a_static_manifest_uses_its_start_url_as_the_prefix_local_identity() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
