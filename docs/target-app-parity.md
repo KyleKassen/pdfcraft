@@ -295,7 +295,7 @@ licensed OCR or AI model.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-28 | minor | M6: form_fields exposes accepted number/percentage settings for reapplication through form_set_props with unchanged display and saved appearances. Matrix and save/reopen regressions cover separator 0-4, negative 0-3 and currency position; existing legacy clamping remains. Scores and estimates unchanged. |
+| 2026-10-28 | minor | M6: form_fields exposes accepted number/percentage settings for reapplication through form_set_props with unchanged numeric display. The matrix covers separator 0-4, negative 0-3 and currency position; CLI appearance checks cover representative style 2; existing legacy clamping remains. Scores and estimates unchanged. |
 | 2026-10-25 | minor | Localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Scores and estimates unchanged. |
 | 2026-10-20 | minor | M12 #3673: the Character encoding rule accepts Identity-H/V fonts with Adobe CJK collections, or a predefined non-Identity CMap, while rejecting unknown names and foreign registries. Synthetic checker and read-only automation regressions passed after failing before the fix; per-glyph mapping validation and embedded-font extraction remain separate. Breadth, readiness and hours unchanged. |
 | 2026-10-12 | minor | Exclusive image crops resize with their pixels across nested states, intervening operators and content streams; shared clips remain fixed. Synthetic engine/tool regressions and private image save/reopen checks; estimates unchanged. |

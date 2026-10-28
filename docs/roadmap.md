@@ -245,7 +245,8 @@ M2 (renderer), M7 (content editing), M10 (OCR and Office), M11 (Preflight and st
 ## Revision history
 
 **2026-10-28 | minor:** M6: accepted numeric form-format readback preserves separators, negative style and currency position when reapplied.
-Save/reopen and appearance regressions cover the accepted style ranges; scores and estimates are unchanged.
+The matrix covers accepted styles; CLI save/reopen and pixel checks cover the representative style 2 case.
+Scores and estimates are unchanged.
 
 **2026-10-25 · minor:** M14 localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Estimates unchanged.
 

@@ -203,7 +203,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 - **2026-10-28 (M6, format readback):** `form_fields` returns all accepted number/percentage settings in the shape `form_set_props` accepts.
   Reapplication retains number separators, negative style and currency position, and percentage separators, including after save/reopen.
-  Synthetic matrix, appearance-text and CLI render regressions cover the accepted separator 0-4 and negative 0-3 ranges.
+  The synthetic matrix covers accepted separator 0-4 and negative 0-3 ranges.
+  CLI appearance-text and pixel checks cover the representative parentheses style 2 case.
   Legacy out-of-range styles retain existing clamping behavior; estimates are unchanged.
 - **2026-10-27 (M10, OCR models):** Model staging downloads and verifies the ONNX pair after the upstream RTEN URL brownout; runtime discovery prefers complete ONNX pairs per directory, retains complete RTEN fallback and preserves directory precedence.
 - **2026-10-24 (M10, #4158 partial):** Word, HTML, RTF and PowerPoint export keep a block that continues another on its line (an italic case name, a link, a superscript) as a run in its own style inside that paragraph, with the source's word space, instead of a paragraph of its own. Style changes that wrap onto the next line still split paragraphs (the reading blocks keep style boundaries). Estimates unchanged.
@@ -684,7 +685,8 @@ Newest first: the date, what moved, and the new overall estimate.
 ## Revision history
 
 **2026-10-28 | minor:** M6: accepted numeric form-format readback preserves separators, negative style and currency position when reapplied.
-Save/reopen and appearance regressions cover the accepted style ranges; scores and estimates are unchanged.
+The matrix covers accepted styles; CLI save/reopen and pixel checks cover the representative style 2 case.
+Scores and estimates are unchanged.
 
 **2026-10-25 · minor:** M14 localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Estimates unchanged.
 
