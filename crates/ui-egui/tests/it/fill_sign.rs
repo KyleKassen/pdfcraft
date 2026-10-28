@@ -701,6 +701,51 @@ fn image_signature_preview_follows_pointer_at_page_size_with_zoom_and_rotation()
 }
 
 #[test]
+fn saved_signature_size_image_preview_matches_placement_through_zoom_and_rotation() {
+    let _gpu = gpu();
+    let path = signature_file_with_mark("saved-size-pointer", 100..110);
+    let image = pdfcraft_engine::SignatureImage::read(std::fs::File::open(&path).unwrap()).unwrap();
+    let mut h = harness();
+    h.state_mut().signature = Some(SavedSig::Image(image));
+    let mut prefs: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    // Both dimensions exceed the old fit box, so accidentally applying that cap is visible.
+    prefs["signature_size"] = serde_json::json!([160.0, 50.0]);
+    h.state_mut().restore(&prefs.to_string());
+    assert!(h.state_mut().execute("sign.fill.signature"));
+    let mut previous_document_rotation = 0;
+    for (document_rotation, view_rotation, zoom) in [(0, 0, "150"), (90, 0, "100"), (90, 90, "75"), (0, 270, "100")] {
+        let delta = document_rotation - previous_document_rotation;
+        if delta != 0 {
+            assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::RotatePages { pages: vec![0], degrees: delta }));
+        }
+        previous_document_rotation = document_rotation;
+        while h.state().views[0].rotation != view_rotation {
+            h.state_mut().views[0].rotate_view(true);
+        }
+        h.state_mut().set_option("zoom", zoom).unwrap();
+        h.run_steps(3);
+        h.hover_at(at(&h, 40.0, 200.0));
+        h.run_steps(2);
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None);
+        let pixels = h.render().unwrap();
+        for (dx, dy, dark) in [(80.0, 0.0, true), (155.0, 0.0, false), (140.0, 12.5, true), (140.0, -12.5, false)] {
+            let probe = shown(&h, 40.0, 200.0, dx, dy);
+            let rgb = &pixels.get_pixel(probe.x as u32, probe.y as u32).0[..3];
+            assert!(
+                if dark { rgb.iter().all(|v| *v < 60) } else { rgb.iter().all(|v| *v > 240) },
+                "preferred-size image at ({dx}, {dy}), document rotation {document_rotation}, view rotation {view_rotation}: {rgb:?}"
+            );
+        }
+        assert!(items(&h).is_empty(), "preview does not edit the PDF");
+    }
+    click(&mut h, 40.0, 200.0);
+    let s = h.state();
+    let size = s.session.get(s.views[0].id).unwrap().signature_placement_size(0, 0).unwrap().unwrap();
+    assert!((size.width() - 160.0).abs() < 0.01 && (size.height() - 50.0).abs() < 0.01, "placed size matches the preview");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn image_signature_placement_selects_resize_handles_and_requires_reselecting_to_repeat() {
     let _gpu = gpu();
     let path = signature_file("resize");
@@ -1230,6 +1275,133 @@ fn drag(h: &mut Harness<'static, PdfCraftApp>, from: (f32, f32), to: (f32, f32))
 fn rects(h: &Harness<'static, PdfCraftApp>) -> Vec<[f32; 4]> {
     let s = h.state();
     s.session.get(s.views[0].id).unwrap().info.annotations.iter().map(|a| a.rect).collect()
+}
+
+/// A resized appearance can explicitly supply the saved signature's next placement size,
+/// without editing the already placed annotation, and the choice survives restored settings.
+#[test]
+fn saved_signature_size_default_is_reused_after_resize_and_restore() {
+    let mut h = harness();
+    h.state_mut().signature = Some(SavedSig::Typed("Synthetic User".into()));
+    assert!(h.state_mut().execute("sign.fill.signature"));
+    click(&mut h, 40.0, 250.0);
+    let [placed] = rects(&h)[..] else { panic!("one signature: {:?}", rects(&h)) };
+    let corner = at(&h, placed[2], placed[1]);
+    let end = at(&h, (placed[0] + placed[2]) / 2.0, (placed[1] + placed[3]) / 2.0);
+    h.hover_at(corner);
+    h.run_steps(2);
+    h.drag_at(corner);
+    h.run_steps(1);
+    h.hover_at(end);
+    h.run_steps(2);
+    h.drop_at(end);
+    h.run_steps(3);
+    let [resized] = rects(&h)[..] else { panic!("one resized signature") };
+    assert!((resized[3] - resized[1] - 16.0).abs() < 0.1, "actual corner resize: {resized:?}");
+
+    let center = at(&h, (resized[0] + resized[2]) / 2.0, (resized[1] + resized[3]) / 2.0);
+    h.hover_at(center);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: center, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    h.get_by_label("Use this size for saved signature").click();
+    h.run_steps(3);
+    assert_eq!(rects(&h), vec![resized], "remembering a size must not edit the document");
+
+    let saved = h.state().persist();
+    let mut again = harness();
+    again.state_mut().restore(&saved);
+    assert!(again.state_mut().execute("sign.fill.signature"));
+    click(&mut again, 40.0, 250.0);
+    let [next] = rects(&again)[..] else { panic!("one signature after restoring preferences") };
+    assert!((next[2] - next[0] - (resized[2] - resized[0])).abs() < 0.1, "saved width: {resized:?} -> {next:?}");
+    assert!((next[3] - next[1] - (resized[3] - resized[1])).abs() < 0.1, "saved height: {resized:?} -> {next:?}");
+}
+
+#[test]
+fn saved_signature_sizes_have_independent_lifetimes_and_cancel_preserves_them() {
+    let mut h = harness();
+    h.state_mut().signature = Some(SavedSig::Typed("Synthetic User".into()));
+    h.state_mut().initials = Some(SavedSig::Typed("SU".into()));
+    let mut prefs: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    prefs["signature_size"] = serde_json::json!([70.0, 16.0]);
+    prefs["initials_size"] = serde_json::json!([22.0, 9.0]);
+    h.state_mut().restore(&prefs.to_string());
+    assert!(h.state_mut().execute("sign.fill.signature"));
+    click(&mut h, 40.0, 250.0);
+    assert!(h.state_mut().execute("sign.fill.initials"));
+    click(&mut h, 40.0, 150.0);
+    let [signature, initials] = rects(&h)[..] else { panic!("two independently sized appearances") };
+    assert!((signature[2] - signature[0] - 70.0).abs() < 0.1 && (signature[3] - signature[1] - 16.0).abs() < 0.1);
+    assert!((initials[2] - initials[0] - 22.0).abs() < 0.1 && (initials[3] - initials[1] - 9.0).abs() < 0.1);
+
+    assert!(h.state_mut().execute("sign.fill.signature.change"));
+    h.run_steps(3);
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    let after_cancel: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    assert_eq!(after_cancel["signature_size"], prefs["signature_size"]);
+    assert_eq!(after_cancel["initials_size"], prefs["initials_size"]);
+
+    assert!(h.state_mut().execute("sign.fill.signature.change"));
+    h.run_steps(3);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    let after_change: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    assert!(after_change["signature_size"].is_null(), "accepted replacement resets its placement preference");
+    assert_eq!(after_change["initials_size"], prefs["initials_size"]);
+    assert_eq!(rects(&h), vec![signature, initials], "saved-graphic changes do not rewrite placed annotations");
+
+    assert!(h.state_mut().execute("sign.fill.initials.remove"));
+    let after_remove: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    assert!(after_remove["initials_size"].is_null());
+    assert_eq!(rects(&h), vec![signature, initials], "removing the saved graphic leaves PDF instances alone");
+}
+
+#[test]
+fn saved_signature_size_restore_rejects_invalid_optional_values_without_losing_graphics() {
+    let bad_sizes = [
+        serde_json::json!(null),
+        serde_json::json!([70.0]),
+        serde_json::json!([70.0, 16.0, 1.0]),
+        serde_json::json!(["70", 16.0]),
+        serde_json::json!([70.0, null]),
+        serde_json::json!([0.0, 16.0]),
+        serde_json::json!([-70.0, 16.0]),
+        serde_json::json!([0.009, 16.0]),
+        serde_json::json!([14_401.0, 16.0]),
+        serde_json::json!({"width":70.0,"height":16.0}),
+    ];
+    for bad in bad_sizes {
+        let mut app = PdfCraftApp::new();
+        let good = serde_json::json!({"signature_text":"Synthetic User", "initials":{"Typed":"SU"}, "signature_size":[70.0,16.0], "initials_size":[22.0,9.0]});
+        app.restore(&good.to_string());
+        let mut damaged = good.clone();
+        damaged["signature_size"] = bad.clone();
+        damaged["initials_size"] = bad.clone();
+        app.restore(&damaged.to_string());
+        let restored: serde_json::Value = serde_json::from_str(&app.persist()).unwrap();
+        assert_eq!(restored["signature_text"], "Synthetic User", "{bad}");
+        assert_eq!(restored["initials"], serde_json::json!({"Typed":"SU"}), "{bad}");
+        assert!(restored["signature_size"].is_null() && restored["initials_size"].is_null(), "reject the whole pair: {bad}");
+        let mut empty = PdfCraftApp::new();
+        empty.restore(&serde_json::json!({"signature_size":[70.0,16.0],"initials_size":[22.0,9.0]}).to_string());
+        let orphan: serde_json::Value = serde_json::from_str(&empty.persist()).unwrap();
+        assert!(
+            orphan["signature_size"].is_null() && orphan["initials_size"].is_null(),
+            "a preference without a corresponding graphic is not retained"
+        );
+        app.restore(&good.to_string());
+        app.restore(&serde_json::json!({"signature_text":"Other User", "initials":{"Typed":"OU"}}).to_string());
+        let legacy: serde_json::Value = serde_json::from_str(&app.persist()).unwrap();
+        assert!(
+            legacy["signature_size"].is_null() && legacy["initials_size"].is_null(),
+            "legacy restore does not attach stale size preferences to new graphics"
+        );
+    }
 }
 
 /// A placed signature moves while a Fill & Sign tool is still active (as in Acrobat), instead of

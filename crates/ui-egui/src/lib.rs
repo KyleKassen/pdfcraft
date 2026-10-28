@@ -590,6 +590,9 @@ pub struct PdfCraftApp {
     /// The saved Fill & Sign signature and initials (drawn or typed).
     pub signature: Option<fill_sign::SavedSig>,
     pub initials: Option<fill_sign::SavedSig>,
+    pub signature_placement_size: Option<pdfcraft_engine::SignaturePlacementSize>,
+    pub initials_placement_size: Option<pdfcraft_engine::SignaturePlacementSize>,
+    pub(crate) pending_signature_size_request: Option<(u64, usize, usize, bool)>,
     /// The Create signature / initials dialog, and its typed preview.
     pub signature_draft: fill_sign::SigDraft,
     pub(crate) signature_preview: Option<(fill_sign::SavedSig, egui::TextureHandle)>,

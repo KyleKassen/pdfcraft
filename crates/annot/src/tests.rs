@@ -36,6 +36,28 @@ fn meta(id: &str) -> Meta {
     Meta { date: Some("D:20261001120000Z".into()), id: id.into() }
 }
 
+#[test]
+fn appearance_signature_size_query_bounds_subject_before_decoding() {
+    let mut doc = fixture();
+    let index =
+        add_annotation(&mut doc, &new(0, Shape::Signature { strokes: vec![vec![[10.0, 20.0], [50.0, 40.0]]] }), &meta("signature-size")).unwrap();
+    let (_, r) = annot_ref(&mut doc, 0, index).unwrap();
+    let original = appearance_signature_rect(&doc, 0, index).unwrap();
+    assert!(original.is_some());
+    for subject in [
+        PdfString::text(" Signature "),
+        PdfString::literal([vec![0xfe, 0xff], "Signature".encode_utf16().flat_map(u16::to_be_bytes).collect()].concat()),
+    ] {
+        doc.update_dict(r, |d| d.set(b"Subj".to_vec(), Object::String(subject))).unwrap();
+        assert_eq!(appearance_signature_rect(&doc, 0, index).unwrap(), original);
+    }
+    // The old general text reader would trim these spaces and accept Signature.
+    // This query refuses the raw input before allocating its decoded text.
+    let padded = PdfString::text(&format!("{}Signature", " ".repeat(129)));
+    doc.update_dict(r, |d| d.set(b"Subj".to_vec(), Object::String(padded))).unwrap();
+    assert_eq!(appearance_signature_rect(&doc, 0, index).unwrap(), None);
+}
+
 fn new(page: usize, shape: Shape) -> NewAnnotation {
     NewAnnotation {
         page,

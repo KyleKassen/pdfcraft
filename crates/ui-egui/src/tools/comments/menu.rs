@@ -5,6 +5,39 @@ use super::{
     icons, theme, tool_for, vec2,
 };
 
+/// Offer explicit size-copy actions only for an appearance the engine recognizes as a
+/// Fill & Sign signature, and only when the corresponding saved target exists.
+pub(crate) fn signature_size_items(ui: &mut egui::Ui, view: &mut DocView, doc: &pdfcraft_engine::Document, has_signature: bool, has_initials: bool) {
+    let Some((page, index)) = view.comments.selected else { return };
+    let Ok(Some(_)) = doc.signature_placement_size(page, index) else { return };
+    let mut offered = false;
+    if has_signature {
+        if ui
+            .button(tl!("Use this size for saved signature"))
+            .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."))
+            .clicked()
+        {
+            view.comments.signature_size_request = Some((page, index, false));
+            ui.close();
+        }
+        offered = true;
+    }
+    if has_initials {
+        if ui
+            .button(tl!("Use this size for saved initials"))
+            .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."))
+            .clicked()
+        {
+            view.comments.signature_size_request = Some((page, index, true));
+            ui.close();
+        }
+        offered = true;
+    }
+    if offered {
+        ui.separator();
+    }
+}
+
 /// Save attachment… and, for a PDF, Open in a new tab, first in a file attachment comment's
 /// menus as in the Attachments panel: the comment is where the reader finds its file. Reading
 /// the file changes nothing, so a read-only document offers them too.
