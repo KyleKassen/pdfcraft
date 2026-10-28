@@ -532,7 +532,7 @@ fn tiff_pages_within(name: &str, bytes: &[u8], wanted: usize, budget: usize) -> 
     loop {
         let (w, h) = dec.dimensions().map_err(|e| bad(e.to_string()))?;
         let ct = dec.colortype().map_err(|e| bad(e.to_string()))?;
-        let (ct, associated) = tiff_alpha_layout(&mut dec, ct).map_err(&bad)?;
+        let (ct, associated) = tiff_alpha_layout(&mut dec, ct).map_err(bad)?;
         let unit = dec.get_tag_u32(Tag::ResolutionUnit).unwrap_or(2);
         let res = |t: Tag, dec: &mut Decoder<std::io::Cursor<&[u8]>>| -> f64 {
             // Resolutions are rationals.
@@ -546,7 +546,7 @@ fn tiff_pages_within(name: &str, bytes: &[u8], wanted: usize, budget: usize) -> 
         };
         let dpi = (res(Tag::XResolution, &mut dec), res(Tag::YResolution, &mut dec));
         let decoded = dec.read_image().map_err(|e| bad(e.to_string()))?;
-        let data = tiff_sample_bytes(decoded, &ct, associated).map_err(&bad)?;
+        let data = tiff_sample_bytes(decoded, &ct, associated).map_err(bad)?;
         let page = match ct {
             C::Gray(1) => {
                 // Bilevel scans stay 1 bit per pixel (0 = black after the decoder's inversion).
