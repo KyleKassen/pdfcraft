@@ -9283,3 +9283,5 @@ fn page_render_draws_stamps_without_an_appearance() {
 }
 
 mod tiff_aspect;
+
+mod subpoint_images;

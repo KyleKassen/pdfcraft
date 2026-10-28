@@ -34,6 +34,7 @@ Pixels are not resampled for aspect correction, and ordinary JPEG data stays byt
 Existing EXIF correction can re-encode a JPEG; it now retains valid unitless JFIF density and swaps the density axes on quarter turns.
 Its existing color-profile limitations remain a separate contribution (#4669).
 Page placement uses the same PDF real precision as the page box, including positive dimensions below 0.001 point after the existing page-side cap.
+Natural Add image fitting also keeps positive sub-point boxes, with precise clipping and placement transforms.
 
 Image export and Save Image As apply each lossless image's Decode pair before converting its color components.
 Indexed Decode values select palette entries after rounding and clipping. Color-key masks compare the original samples.
