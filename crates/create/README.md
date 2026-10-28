@@ -13,6 +13,7 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
   frame header, stopping at the first scan or end marker. Broken or mismatched ICC profiles
   still fall back to the device colour space.
   BMP V5 profiles must follow the bitmap bits, fit in the source and be at most 16 MiB.
+  The ICC header size must equal the complete BMP profile byte count before the profile is copied.
   Palette or pixel overlap, malformed metadata and incompatible profiles keep the device colour fallback.
   Profiled neutral BMPs retain RGB samples, and alpha stays in a separate grayscale soft mask.
   Linked profiles are never loaded; BMP resolution, calibrated color fields and rendering-intent policy are unchanged;

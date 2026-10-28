@@ -438,6 +438,11 @@ fn bmp_icc(bytes: &[u8], (w, h): (u32, u32)) -> Option<Vec<u8>> {
     }
     bytes.get(raster_start..raster_end)?;
     let data = bytes.get(start..start.checked_add(len)?)?;
+    // BMP's profile size covers the complete ICC stream, including ICC-internal padding.
+    let declared_size = usize::try_from(u32::from_be_bytes(data.get(..4)?.try_into().ok()?)).ok()?;
+    if declared_size != len {
+        return None;
+    }
     let mut profile = Vec::new();
     profile.try_reserve_exact(len).ok()?;
     profile.extend_from_slice(data);

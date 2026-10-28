@@ -258,3 +258,24 @@ fn bmp_v5_fully_present_profile_above_byte_cap_is_ignored() {
     assert_eq!(embedded.data, pixels);
     assert_eq!(embedded.dict.name(b"ColorSpace"), Some(&b"DeviceRGB"[..]));
 }
+
+#[test]
+fn bmp_v5_rejects_profiles_with_mismatched_declared_size() {
+    let pixels = [90, 80, 70];
+    let base = bmp_bytes(1, 1, image::ExtendedColorType::Rgb8, &pixels);
+    let profile = icc_profile(b"RGB ");
+    for declared_size in [128usize, profile.len() - 1, profile.len() + 1, profile.len()] {
+        let mut candidate = profile.clone();
+        candidate[..4].copy_from_slice(&(declared_size as u32).to_be_bytes());
+        let bytes = bmp_v5(&base, PROFILE_EMBEDDED, &candidate, None, None);
+        let image = embed("size-mismatch.bmp", &bytes, 1).unwrap().remove(0);
+
+        if declared_size == profile.len() {
+            assert_eq!(image.icc, Some(profile.clone()), "a matching declared size retains the profile");
+        } else {
+            assert!(image.icc.is_none(), "declared size {declared_size} must be rejected");
+            assert_eq!(image.dict.name(b"ColorSpace"), Some(&b"DeviceRGB"[..]));
+        }
+        assert_eq!(image.data, pixels, "profile validation must not alter source samples");
+    }
+}
