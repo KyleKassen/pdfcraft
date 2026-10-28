@@ -223,6 +223,8 @@ impl PdfCraftApp {
         }
     }
 
+    /// Move the active document through undo or redo and restore an eligible deletion selection.
+    /// Check page and navigation state before refresh, and restore only after its matching undo succeeds.
     fn history_step(&mut self, undo: bool) {
         let Some((i, id)) = self.active_ids() else { return };
         let deletion = self.session.get(id).zip(self.views.get(i)).and_then(|(doc, view)| view.deletion_history.before_step(doc, undo));

@@ -9,6 +9,7 @@ use super::{
 
 impl Session {
     /// Apply an edit. On success the previous state is undoable and the view data is refreshed.
+    /// Model-edit errors leave the graph unchanged; refresh errors restore the previous graph and keys and remove the new undo entry.
     pub fn apply(&mut self, id: DocId, edit: Edit) -> Result<(), EditError> {
         let now = self.now();
         let today = self.today();
@@ -222,6 +223,8 @@ impl Session {
         Ok(())
     }
 
+    /// Undo the newest edit and return its label, moving its history identity to redo.
+    /// If refreshing fails, retain the pre-call graph, keys and history stack positions.
     pub fn undo(&mut self, id: DocId) -> Result<Label, EditError> {
         let doc = self.doc_mut(id)?;
         let editor = doc.editor.as_mut().ok_or(EditError::NothingToUndo)?;
@@ -251,6 +254,8 @@ impl Session {
         Ok(label)
     }
 
+    /// Redo the newest undone edit and return its label, moving its history identity to undo.
+    /// If refreshing fails, retain the pre-call graph, keys and history stack positions.
     pub fn redo(&mut self, id: DocId) -> Result<Label, EditError> {
         let doc = self.doc_mut(id)?;
         let editor = doc.editor.as_mut().ok_or(EditError::NothingToRedo)?;

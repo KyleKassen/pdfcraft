@@ -535,6 +535,7 @@ fn undo_on_another_page_does_not_restore_a_hidden_or_delayed_selection() {
     assert_eq!(objects(&h), before, "returning to the page does not activate a delayed selection");
 }
 
+/// Identical text and placement must not collapse two distinct targets when restoring their selection.
 #[test]
 fn undo_restores_distinct_added_objects_with_identical_text_and_geometry() {
     let mut h = harness();

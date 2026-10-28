@@ -22,6 +22,8 @@ impl DeletionHistory {
         self.records.retain(|(id, _)| doc.contains_history_step(id));
     }
 
+    /// Associate a captured deletion selection with the new undo entry, if the edit created one.
+    /// Prune stale entries, and use `previous` to exclude successful no-ops.
     pub(super) fn applied(&mut self, doc: &Document, previous: Option<&HistoryStepId>, selection: Option<Selection>) {
         self.prune(doc);
         if let (Some(id), Some(selection)) = (doc.next_undo_id(), selection)
@@ -31,12 +33,16 @@ impl DeletionHistory {
         }
     }
 
+    /// Find the captured selection for the exact undo or redo entry about to move.
+    /// History identity distinguishes reused object indices and entries on abandoned branches.
     pub(super) fn before_step(&self, doc: &Document, undo: bool) -> Option<Selection> {
         let id = if undo { doc.next_undo_id() } else { doc.next_redo_id() }?;
         self.records.iter().find(|(step, _)| *step == id).map(|(_, selection)| selection.clone())
     }
 }
 
+/// Describe a supported object deletion using the target index recorded by that edit.
+/// Other edits are outside this object-deletion subset.
 fn deleted_target(edit: &Edit) -> Option<(usize, ObjectTarget)> {
     match edit {
         Edit::EditTextBlock { page, block, text, .. } if text.is_empty() => Some((*page, ObjectTarget { kind: ObjectKind::Text, index: *block })),
@@ -51,6 +57,9 @@ impl Selection {
         view.history_selection_on_page(self.page)
     }
 
+    /// Capture deleted targets only when the edit refers to the original page inventory.
+    /// Batches must be bounded and on one page, with unique descending indices per kind and source targets before added content.
+    /// Unsupported or ambiguous edits return `None` to avoid selecting another original object.
     pub(super) fn capture(edit: &Edit, view: &DocView, doc: &Document) -> Option<Self> {
         let deleted = match edit {
             Edit::Batch { edits, .. } if !edits.is_empty() && edits.len() <= MAX_MOVE_OBJECTS => {
@@ -92,6 +101,8 @@ impl Selection {
         Some(Self { page, targets: deleted.into_iter().map(|(_, target)| target).collect(), added })
     }
 
+    /// Restore only while the editing surface is active and no uncommitted editor work would be displaced.
+    /// The caller has checked that this page is current and navigation is settled.
     pub(super) fn restore(&self, view: &mut DocView, doc: &Document, tool: QuickTool, content_active: bool) {
         // Restoring a selection must never discard typing in another, uncommitted editor.
         if view.content.draft.is_some()
@@ -113,6 +124,7 @@ mod tests {
     use crate::PdfCraftApp;
     use pdfcraft_engine::{AddedText, BlockStyle};
 
+    /// Build an original page with two separated source paragraphs and one added text item.
     fn app() -> PdfCraftApp {
         // Contributor-original text-only fixture, generated with a complete classic xref.
         let body = "BT /F1 18 Tf 40 430 Td (First) Tj ET BT /F1 18 Tf 40 90 Td (Last) Tj ET";
@@ -157,6 +169,7 @@ mod tests {
         }
     }
 
+    /// Only original-state references may be captured, even when a batch's sequential edits would be valid.
     #[test]
     fn capture_rejects_sequential_batches_that_do_not_name_original_targets() {
         let app = app();

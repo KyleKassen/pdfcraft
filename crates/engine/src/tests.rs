@@ -679,6 +679,7 @@ fn undo_and_redo_restore_exact_states() {
     assert_eq!(s.get(id).unwrap().info.pages.len(), 4);
 }
 
+/// History identities survive save and undo/redo, remain document-specific, and expire with their history entries.
 #[test]
 fn opaque_history_step_ids_follow_undo_redo_save_and_branches() {
     let (mut session, first) = session_with(2);

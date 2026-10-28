@@ -973,6 +973,7 @@ fn assert_content_delete_ready(h: &Harness<'static, PdfCraftApp>, index: usize) 
 
 // Select an added item through the Edit tool's real drag path. A small move also commits a
 // harmless visible geometry change, avoiding a synthetic selection or private field mutation.
+/// Select through a short actual drag, which commits a separate Move history entry.
 fn select_added_by_drag(h: &mut Harness<'static, PdfCraftApp>, index: usize) {
     let rect = added(h)[index].content.rect();
     let center = at(h, ((rect[0] + rect[2]) / 2.0) as f32, (400.0 - (rect[1] + rect[3]) / 2.0) as f32);
@@ -1063,6 +1064,7 @@ fn saving_while_delete_redo_exists_preserves_the_undo_branch() {
     assert!(h.state().session.get(id).unwrap().dirty);
 }
 
+/// Follow each deletion's identity when an added-text index is reused across an interposed Move step.
 #[test]
 fn repeated_added_text_deletions_restore_after_same_kind_index_reuse() {
     let mut h = harness();
