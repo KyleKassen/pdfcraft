@@ -37,6 +37,22 @@ fn valid_text_fixture() -> Vec<u8> {
     pdfcraft_cos::write_full(&doc, &Default::default()).expect("writes a valid xref")
 }
 
+/// A valid-xref fixture whose second page uses a custom prefixed Roman label.
+fn custom_roman_page_label_fixture() -> Vec<u8> {
+    use pdfcraft_cos::{Dict, Object};
+
+    let mut doc = pdfcraft_cos::Document::open(std::sync::Arc::new(valid_text_fixture())).expect("fixture parses");
+    let mut range = Dict::new();
+    range.set(b"S".to_vec(), Object::name("r"));
+    range.set(b"P".to_vec(), Object::String(pdfcraft_cos::PdfString::text("Section-")));
+    range.set(b"St".to_vec(), Object::Int(7));
+    let mut labels = Dict::new();
+    labels.set(b"Nums".to_vec(), Object::Array(vec![1.into(), Object::Dict(range)]));
+    doc.update_dict(doc.root().expect("catalog"), |catalog| catalog.set(b"PageLabels".to_vec(), Object::Dict(labels)))
+        .expect("adds page labels to the original catalog");
+    pdfcraft_cos::write_full(&doc, &Default::default()).expect("writes a valid xref with page labels")
+}
+
 /// A valid-xref contributor-original fixture with only an orphan review-status annotation in
 /// the page's /Annots list. Its target is deliberately not listed on a page.
 fn orphan_status_fixture() -> Vec<u8> {
@@ -248,6 +264,38 @@ fn comment_clear_page_uses_current_page_and_preserves_other_page_draft() {
     assert_eq!(remaining.len(), 2, "hidden comments on current page are still in scope");
     assert!(remaining.iter().all(|comment| comment.page == 0));
     assert_eq!(h.state().views[0].comments.composer.as_ref().map(|c| c.text.as_str()), Some("unrelated draft"));
+}
+
+#[test]
+fn comment_clear_confirmation_uses_the_current_page_pdf_label() {
+    let _gpu = crate::gpu();
+    let mut h = harness_with_bytes(custom_roman_page_label_fixture(), |app| {
+        add_clear_test_comments(app);
+        app.set_option("page", "2").unwrap();
+    });
+    let id = h.state().views[0].id;
+    assert_eq!(h.state().views[0].current, 1);
+    assert_eq!(h.state().session.get(id).unwrap().info.pages[1].label, "Section-vii", "the loaded original PageLabels tree is honored");
+    assert_eq!(comments(&h).len(), 3);
+
+    open_comment_clear_menu(&mut h);
+    h.get_by_label("Delete comments on this page…").click();
+    h.run_steps(2);
+    h.state_mut().views[0].go_to_page(0);
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].current, 0, "later navigation must not retarget the captured confirmation");
+    h.get_by_label_contains("Delete every comment on page Section-vii (2 of 2)?");
+    if let Ok(dir) = std::env::var("PDFCRAFT_SHOTS") {
+        support::settle(&mut h);
+        h.render().unwrap().save(format!("{dir}/comment-clear-page-label-confirmation.png")).unwrap();
+    }
+
+    h.get_by_label("Delete comments").click();
+    h.run_steps(3);
+    let remaining = comments(&h);
+    assert_eq!(remaining.len(), 2);
+    assert!(remaining.iter().all(|comment| comment.page == 0), "only the captured physical page is cleared");
+    assert_eq!(h.query_all_by_label("Second page clear note").count(), 0);
 }
 
 #[test]

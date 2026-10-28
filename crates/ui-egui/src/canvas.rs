@@ -1090,7 +1090,7 @@ pub(crate) struct PageToolContext<'a> {
 /// comments; then text selection.
 fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_>, slot: &PageSlot) -> PageInput {
     if frame.env.clear_comments_dialog {
-        return PageInput { consumed: true, over_field: false, area_tool: false };
+        return PageInput { consumed: true, area_tool: false };
     }
     let PageEnv {
         added,

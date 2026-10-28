@@ -1700,11 +1700,27 @@ fn dialog_clear_comments(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pen
     let confirmation = app.views.iter().find_map(|view| view.comments.clear_confirmation);
     ui.label(egui::RichText::new(tl!("Delete comments?")).font(theme::semibold(18.0)));
     ui.add_space(8.0);
-    match confirmation.and_then(|c| c.page) {
-        Some(page) => ui.label(crate::i18n::fmt(
-            tl!("Delete every comment on page {page}? Comments hidden by filters or collapsed groups are included."),
-            &[("page", &(page + 1).to_string())],
-        )),
+    match confirmation.and_then(|c| c.page.map(|page| (c.doc, page))) {
+        Some((doc, page)) => {
+            let position = page.saturating_add(1).to_string();
+            let caption = app
+                .session
+                .get(doc)
+                .and_then(|document| {
+                    let info = document.info.pages.get(page)?;
+                    (!info.label.is_empty() && info.label != position).then(|| {
+                        crate::i18n::fmt(
+                            tl!("{label} ({position} of {total})"),
+                            &[("label", &info.label), ("position", &position), ("total", &document.info.pages.len().to_string())],
+                        )
+                    })
+                })
+                .unwrap_or(position);
+            ui.label(crate::i18n::fmt(
+                tl!("Delete every comment on page {page}? Comments hidden by filters or collapsed groups are included."),
+                &[("page", &caption)],
+            ))
+        }
         None => ui.label(tl!("Delete every comment in this document? Comments hidden by filters or collapsed groups are included.")),
     };
     ui.add_space(12.0);

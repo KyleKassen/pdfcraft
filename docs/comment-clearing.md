@@ -2,6 +2,7 @@
 
 The Comments panel's More options menu offers **Delete comments on this page…** and **Delete all comments…**.
 Both open a confirmation before changing the document.
+For custom page labels, the page confirmation also shows the page's position in the document.
 The scope includes comments hidden by search, filters, collapsed groups or PDF visibility flags, along with replies, review status entries and associated pop-ups.
 Cancelling leaves the document and comment drafts alone.
 Clearing stored comments also preserves uncommitted new-comment composers, replacement-text quads and unfinished drawings, since they do not reference a removed annotation.
