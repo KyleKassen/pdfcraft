@@ -65,7 +65,7 @@ In a browser there is no spooler: the app (`pdfcraft-ui-egui`'s `web_print`) dra
 PDF's sheets with PdfCraft's renderer and prints them through the browser's print dialog, which
 sets copies, two-sided printing and colour. This crate stays free of web APIs.
 
-Not yet: print as image, poster labels, PostScript output, colour conversion for
+Not yet: poster labels, PostScript output, colour conversion for
 grayscale.
 
 ## Architectural sheets and scale
