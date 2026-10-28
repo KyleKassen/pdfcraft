@@ -74,8 +74,12 @@ impl Drop for TempPdf {
 }
 
 fn harness(path: &str) -> Harness<'static, PdfCraftApp> {
+    harness_at(path, egui::vec2(1400.0, 900.0))
+}
+
+fn harness_at(path: &str, size: egui::Vec2) -> Harness<'static, PdfCraftApp> {
     let path = path.to_owned();
-    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+    let mut h = Harness::builder().with_size(size).build_eframe(move |_cc| {
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
         // The labels looked for are English, whatever the machine's language.
@@ -324,6 +328,61 @@ fn saving_over_a_file_changed_by_something_else_asks_first() {
     // Our own write is the version the document came from now.
     rotate_first_page(&mut h);
     assert!(h.state_mut().save_active(SaveTarget::InPlace), "written at once");
+}
+
+const DISK_CHANGE_NOTICE: &str =
+    "This file changed on disk. Reload shows the new version and drops your unsaved changes; Save replaces it with this version.";
+
+fn assert_disk_change_notice_geometry(h: &Harness<'static, PdfCraftApp>, size: egui::Vec2, narrow: bool) {
+    let notice = h.get_by_label(DISK_CHANGE_NOTICE).rect();
+    let reload = h.get_by_label("Reload").rect();
+    let dismiss = h.get_by_label("Dismiss").rect();
+    let inside = |rect: egui::Rect| rect.left() >= 0.0 && rect.top() >= 0.0 && rect.right() <= size.x && rect.bottom() <= size.y;
+    assert!(inside(notice), "notice text is clipped by the viewport: {notice:?}");
+    assert!(inside(reload), "Reload is outside the viewport: {reload:?}");
+    assert!(inside(dismiss), "Dismiss is outside the viewport: {dismiss:?}");
+    assert!(!notice.intersects(reload), "notice text overlaps Reload: {notice:?}, {reload:?}");
+    assert!(!notice.intersects(dismiss), "notice text overlaps Dismiss: {notice:?}, {dismiss:?}");
+    assert!(!reload.intersects(dismiss), "notice buttons overlap: {reload:?}, {dismiss:?}");
+    if narrow {
+        assert!(notice.height() > 24.0, "the message should wrap at the narrow size: {notice:?}");
+    }
+}
+
+/// The disk-change notice wraps before its actions at narrow widths, and both choices keep their
+/// distinct file/document outcomes.
+#[test]
+fn changed_file_notice_wraps_and_keeps_both_actions_reachable() {
+    for (name, size, narrow) in [("wide", egui::vec2(1400.0, 900.0), false), ("narrow", egui::vec2(800.0, 600.0), true)] {
+        let external = fixture(4);
+        let dismissed_file = TempPdf::new(&format!("notice-dismiss-{name}"), &fixture(2));
+        let mut dismissed = harness_at(&dismissed_file.path, size);
+        rotate_first_page(&mut dismissed);
+        dismissed_file.rebuild(&external);
+        dismissed.run_steps(3);
+        assert_disk_change_notice_geometry(&dismissed, size, narrow);
+        dismissed.get_by_label("Dismiss").click();
+        dismissed.run_steps(2);
+        assert!(dismissed.query_by_label(DISK_CHANGE_NOTICE).is_none(), "Dismiss hides the notice");
+        assert_eq!(pages(&dismissed), 2, "Dismiss keeps the open document");
+        assert!(dirty(&dismissed), "Dismiss keeps the unsaved rotation");
+        assert_eq!(std::fs::read(&dismissed_file.path).unwrap(), external, "Dismiss preserves the external file");
+
+        let reloaded_file = TempPdf::new(&format!("notice-reload-{name}"), &fixture(2));
+        let mut reloaded = harness_at(&reloaded_file.path, size);
+        rotate_first_page(&mut reloaded);
+        reloaded_file.rebuild(&external);
+        reloaded.run_steps(3);
+        assert_disk_change_notice_geometry(&reloaded, size, narrow);
+        reloaded.get_by_label("Reload").click();
+        reloaded.run_steps(3);
+        assert!(reloaded.query_by_label(DISK_CHANGE_NOTICE).is_none(), "Reload consumes the change notice");
+        assert_eq!(pages(&reloaded), 4, "Reload shows the external version");
+        assert!(!dirty(&reloaded), "Reload drops the unsaved rotation");
+        let doc = reloaded.state().session.get(reloaded.state().views[0].id).unwrap();
+        assert_eq!(doc.bytes.as_ref(), &external, "Reload adopts the external bytes");
+        assert_eq!(std::fs::read(&reloaded_file.path).unwrap(), external, "Reload does not overwrite the external file");
+    }
 }
 
 /// With the watcher off nothing notices the change until Save looks at the file.

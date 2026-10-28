@@ -79,23 +79,20 @@ pub(super) fn notices(
     // replacing it, ahead of every other notice.
     if view.disk_changed {
         let mut reload = false;
-        egui::Frame::NONE.fill(t.accent_soft).inner_margin(egui::Margin::symmetric(14, 7)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(icons::image("rotate-cw", 16.0, t.accent_text));
-                ui.label(
-                    egui::RichText::new(tl!(
-                        "This file changed on disk. Reload shows the new version and drops your unsaved changes; Save replaces it with this version."
-                    ))
-                    .color(t.text),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, "x", 22.0, false, tl!("Dismiss")).clicked() {
-                        view.disk_changed = false;
-                    }
-                    reload = crate::widgets::pill_button(ui, tl!("Reload"), false).clicked();
-                });
-            });
-        });
+        notice_bar(
+            ui,
+            t,
+            "rotate-cw",
+            t.accent_text,
+            tl!("This file changed on disk. Reload shows the new version and drops your unsaved changes; Save replaces it with this version.")
+                .to_owned(),
+            |ui| {
+                if icons::button(ui, "x", 22.0, false, tl!("Dismiss")).clicked() {
+                    view.disk_changed = false;
+                }
+                reload = crate::widgets::pill_button(ui, tl!("Reload"), false).clicked();
+            },
+        );
         return reload.then_some(Notice::Reload);
     }
     // A historical snapshot (View signed version / View revision): what it is, above the
