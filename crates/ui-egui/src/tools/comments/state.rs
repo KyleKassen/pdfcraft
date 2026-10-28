@@ -157,7 +157,7 @@ pub struct CommentView {
     /// Make Current Properties Default was asked for: (page, index).
     pub default_request: Option<(usize, usize)>,
     /// Copy the selected eligible Fill & Sign appearance size to a saved target.
-    pub signature_size_request: Option<(usize, usize, bool)>,
+    pub(crate) signature_size_request: Option<crate::fill_sign::SignatureSizeRequest>,
     /// A file attachment comment's file was asked for: (page, index, open it in a new tab
     /// rather than save it).
     pub attachment_request: Option<(usize, usize, bool)>,

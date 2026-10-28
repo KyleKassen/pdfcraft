@@ -17,6 +17,15 @@ mod scan;
 pub use scan::ScanDraft;
 use scan::scan_tab;
 
+/// One explicit menu action, bound to the document and appearance selected at activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SignatureSizeRequest {
+    pub doc: pdfcraft_engine::DocId,
+    pub page: usize,
+    pub annotation: usize,
+    pub initials: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FillTool {
     Text,

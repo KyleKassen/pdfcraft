@@ -5,11 +5,51 @@ use super::{
     icons, theme, tool_for, vec2,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SignatureSizeMenuKey {
+    doc: pdfcraft_engine::DocId,
+    page: usize,
+    annotation: usize,
+    generation: u64,
+}
+
+impl SignatureSizeMenuKey {
+    fn new(doc: &pdfcraft_engine::Document, page: usize, annotation: usize) -> Self {
+        Self { doc: doc.id, page, annotation, generation: doc.edit_generation() }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SignatureSizeMenuCache {
+    key: SignatureSizeMenuKey,
+    eligible: bool,
+}
+
+fn signature_size_menu_eligible(ctx: &egui::Context, key: SignatureSizeMenuKey, has_target: bool, query: impl FnOnce() -> bool) -> bool {
+    if !has_target {
+        return false;
+    }
+    // Replace one entry, rather than retaining a new egui data ID for every document,
+    // selection and edit generation. Both comment menu surfaces share this slot.
+    let id = egui::Id::unique("signature-size-menu-eligibility");
+    if let Some(cached) = ctx.data(|data| data.get_temp::<SignatureSizeMenuCache>(id)).filter(|cached| cached.key == key) {
+        return cached.eligible;
+    }
+    let eligible = query();
+    ctx.data_mut(|data| data.insert_temp(id, SignatureSizeMenuCache { key, eligible }));
+    eligible
+}
+
 /// Offer explicit size-copy actions only for an appearance the engine recognizes as a
 /// Fill & Sign signature, and only when the corresponding saved target exists.
 pub(crate) fn signature_size_items(ui: &mut egui::Ui, view: &mut DocView, doc: &pdfcraft_engine::Document, has_signature: bool, has_initials: bool) {
     let Some((page, index)) = view.comments.selected else { return };
-    let Ok(Some(_)) = doc.signature_placement_size(page, index) else { return };
+    let key = SignatureSizeMenuKey::new(doc, page, index);
+    if !signature_size_menu_eligible(ui.ctx(), key, has_signature || has_initials, || {
+        matches!(doc.signature_placement_size(page, index), Ok(Some(_)))
+    }) {
+        return;
+    }
     let mut offered = false;
     if has_signature {
         if ui
@@ -17,7 +57,8 @@ pub(crate) fn signature_size_items(ui: &mut egui::Ui, view: &mut DocView, doc: &
             .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."))
             .clicked()
         {
-            view.comments.signature_size_request = Some((page, index, false));
+            view.comments.signature_size_request =
+                Some(crate::fill_sign::SignatureSizeRequest { doc: view.id, page, annotation: index, initials: false });
             ui.close();
         }
         offered = true;
@@ -28,7 +69,8 @@ pub(crate) fn signature_size_items(ui: &mut egui::Ui, view: &mut DocView, doc: &
             .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."))
             .clicked()
         {
-            view.comments.signature_size_request = Some((page, index, true));
+            view.comments.signature_size_request =
+                Some(crate::fill_sign::SignatureSizeRequest { doc: view.id, page, annotation: index, initials: true });
             ui.close();
         }
         offered = true;
@@ -403,3 +445,6 @@ pub fn status_badge(state: &str) -> Option<(&'static str, &'static str, Color32)
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod signature_size_menu_cache;

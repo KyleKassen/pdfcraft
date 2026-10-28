@@ -362,6 +362,15 @@ impl PdfCraftApp {
         Some(true)
     }
 
+    /// Dispatch a menu request through the same fresh validation as a direct command.
+    /// Clear the transient identity even when command enablement refuses execution.
+    pub(crate) fn dispatch_signature_size_request(&mut self, request: crate::fill_sign::SignatureSizeRequest) -> bool {
+        self.pending_signature_size_request = Some(request);
+        let executed = self.execute(if request.initials { "sign.fill.initials.size" } else { "sign.fill.signature.size" });
+        self.pending_signature_size_request = None;
+        executed
+    }
+
     /// Validate the selected appearance and saved target for the explicit size-copy command.
     /// The same checks drive enablement, refusal text, and execution.
     fn signature_size_source(&self, id: &str) -> Result<pdfcraft_engine::SignaturePlacementSize, String> {
@@ -372,8 +381,9 @@ impl PdfCraftApp {
         let Some((view_index, doc_id)) = self.active_ids() else { return Err(tl!("Open a document first").to_string()) };
         let Some(view) = self.views.get(view_index) else { return Err(tl!("Open a document first").to_string()) };
         let Some((page, annotation)) = view.comments.selected else { return Err(tl!("Select a placed signature first").to_string()) };
-        if let Some((requested_doc, requested_page, requested_annotation, requested_initials)) = self.pending_signature_size_request
-            && (requested_doc != doc_id.0 || requested_page != page || requested_annotation != annotation || requested_initials != initials)
+        if self
+            .pending_signature_size_request
+            .is_some_and(|request| request != crate::fill_sign::SignatureSizeRequest { doc: doc_id, page, annotation, initials })
         {
             return Err(tl!("The selection changed. Select the signature again.").to_string());
         }
@@ -878,6 +888,9 @@ impl PdfCraftApp {
         }
     }
 }
+
+#[cfg(test)]
+mod signature_size_request_tests;
 
 /// The tab after `current` of `count` (before it when `forward` is false), wrapping around. From
 /// no tab, forward is the first and back the last. `None` when there are no tabs.

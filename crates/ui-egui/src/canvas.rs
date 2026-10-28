@@ -3210,11 +3210,8 @@ fn apply_frame_requests(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui, 
     if let Some((p, i)) = app.views[index].comments.default_request.take() {
         app.make_comment_default(p, i);
     }
-    if let Some((page, annotation, initials)) = app.views[index].comments.signature_size_request.take() {
-        let doc = app.views[index].id.0;
-        app.pending_signature_size_request = Some((doc, page, annotation, initials));
-        app.execute(if initials { "sign.fill.initials.size" } else { "sign.fill.signature.size" });
-        app.pending_signature_size_request = None;
+    if let Some(request) = app.views[index].comments.signature_size_request.take() {
+        app.dispatch_signature_size_request(request);
     }
     if let Some((p, i, open)) = app.views[index].comments.attachment_request.take() {
         let doc = app.views[index].id;

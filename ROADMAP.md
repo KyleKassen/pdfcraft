@@ -201,6 +201,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 ## Progress log
 
 - **2026-10-28 (M5, #1288):** Saved Fill & Sign signatures and initials can each retain a resized placement rectangle for future placements, with explicit commands and focused engine, annotation, automation and UI regressions.
+  Menu availability reuses the source check until the document or selection changes; invoking the action checks the source again.
   Estimates unchanged.
 
 - **2026-10-27 (M10, OCR models):** Model staging downloads and verifies the ONNX pair after the upstream RTEN URL brownout; runtime discovery prefers complete ONNX pairs per directory, retains complete RTEN fallback and preserves directory precedence.

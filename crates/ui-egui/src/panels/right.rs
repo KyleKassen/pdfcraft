@@ -413,11 +413,8 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     if let Some((p, i)) = app.views.get_mut(index).and_then(|v| v.comments.default_request.take()) {
         app.make_comment_default(p, i);
     }
-    if let Some((page, annotation, initials)) = app.views.get_mut(index).and_then(|v| v.comments.signature_size_request.take()) {
-        let doc = app.views[index].id.0;
-        app.pending_signature_size_request = Some((doc, page, annotation, initials));
-        app.execute(if initials { "sign.fill.initials.size" } else { "sign.fill.signature.size" });
-        app.pending_signature_size_request = None;
+    if let Some(request) = app.views.get_mut(index).and_then(|v| v.comments.signature_size_request.take()) {
+        app.dispatch_signature_size_request(request);
     }
     if let Some((p, i, open)) = app.views.get_mut(index).and_then(|v| v.comments.attachment_request.take()) {
         app.comment_attachment_action(id, p, i, open);
