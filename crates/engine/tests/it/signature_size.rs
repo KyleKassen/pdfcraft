@@ -215,6 +215,101 @@ fn signature_size_does_not_resize_existing_instances_and_renders_the_full_image(
     assert!((actual.width() - 90.0).abs() < 0.001 && (actual.height() - 25.0).abs() < 0.001);
 }
 
+fn rendered_signature_ink_bounds(bytes: Arc<Vec<u8>>) -> [f64; 4] {
+    const SCALE: f32 = 2.0;
+    let rendered = pdfcraft_render::PageRenderer::new(bytes, pdfcraft_render::RenderConfig::default()).render(pdfcraft_render::RenderRequest {
+        page: 0,
+        scale: SCALE,
+        ..Default::default()
+    });
+    assert!(rendered.error.is_none(), "{:?}", rendered.error);
+    assert!(rendered.width > 0 && rendered.height > 0);
+    let mut bounds: Option<[u32; 4]> = None;
+    for (index, pixel) in rendered.rgba.as_chunks::<4>().0.iter().enumerate() {
+        if pixel[0] < 200 && pixel[1] < 200 && pixel[2] < 200 {
+            let index = u32::try_from(index).unwrap();
+            let (x, y) = (index % rendered.width, index / rendered.width);
+            bounds = Some(match bounds {
+                Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)],
+                None => [x, y, x + 1, y + 1],
+            });
+        }
+    }
+    // Exclusive right/bottom edges describe the full painted pixel footprint in points.
+    bounds.expect("the saved signature appearance must paint visible ink").map(|edge| f64::from(edge) / f64::from(SCALE))
+}
+
+fn typed_signature_visible_fractions() -> [f64; 4] {
+    let outline = pdfcraft_engine::script_outline("Synthetic User");
+    let [x0, y0, x1, y1] = outline.bounds();
+    // Layout bounds include ascent, descent and advance space. Only contour extrema
+    // describe the visible ink; read them before the PDF appearance transform runs.
+    let ink = outline
+        .contours
+        .iter()
+        .filter(|contour| contour.len() > 2)
+        .flatten()
+        .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |[left, bottom, right, top], [x, y]| {
+            [left.min(*x), bottom.min(*y), right.max(*x), top.max(*y)]
+        });
+    assert!(ink.iter().all(|edge| edge.is_finite()));
+    assert!(x1 > x0 && y1 > y0);
+    let [left, bottom, right, top] = ink;
+    let fractions = [(left - x0) / (x1 - x0), (bottom - y0) / (y1 - y0), (right - x0) / (x1 - x0), (top - y0) / (y1 - y0)];
+    assert!(fractions.iter().all(|fraction| fraction.is_finite() && (0.0..=1.0).contains(fraction)));
+    fractions
+}
+
+#[test]
+fn signature_size_typed_and_drawn_appearances_render_at_requested_physical_bounds_after_save() {
+    let size = SignaturePlacementSize::new(65.0, 17.0).unwrap();
+    let [ink_left, ink_bottom, ink_right, ink_top] = typed_signature_visible_fractions();
+    for rotation in [0, 90, 180, 270] {
+        for unit in [1.0, 2.5] {
+            for kind in 0..2 {
+                let (mut session, id) = page(rotation, unit);
+                let info = session.get(id).unwrap().info.pages[0].clone();
+                let at = [100.0, 180.0];
+                let edit = if kind == 0 {
+                    placement(0, &info, at)
+                } else {
+                    // Three collinear points per stroke exercise the smooth-ink path while
+                    // keeping its extrema exact, unlike the irregular curve fixture above.
+                    annotation(Shape::Signature {
+                        strokes: vec![vec![[80.0, 160.0], [135.0, 172.5], [190.0, 185.0]], vec![[80.0, 185.0], [135.0, 172.5], [190.0, 160.0]]],
+                    })
+                };
+                session.apply(id, signature_placement_with_size(edit, &info, at, size).unwrap()).unwrap();
+                let bytes = session.save_bytes(id).unwrap();
+                let reopened = session.open_new("signature-render-roundtrip.pdf", bytes.clone()).unwrap();
+                let actual_size = session.get(reopened).unwrap().signature_placement_size(0, 0).unwrap().unwrap();
+                assert!((actual_size.width() - 65.0).abs() < 0.001 && (actual_size.height() - 17.0).abs() < 0.001);
+
+                // Render the stored bytes directly: no engine display copy can hide a broken
+                // saved appearance. The white page has no other ink, so misplaced paint counts.
+                let actual = rendered_signature_ink_bounds(bytes);
+                let [x, y] = info.user_to_view(at[0] as f32, at[1] as f32).map(f64::from);
+                let expected = if kind == 0 {
+                    // Source font contours occupy only part of the layout box. Their upright
+                    // physical fractions are independent of the AP writer and page rotation.
+                    [x + ink_left * 65.0, y + 8.5 - ink_top * 17.0, x + ink_right * 65.0, y + 8.5 - ink_bottom * 17.0]
+                } else {
+                    // Ink keeps its 1.75-user-unit padding and 0.75-unit round stroke
+                    // radius, leaving a 1-unit visible inset on each displayed edge.
+                    [x + unit, y - 8.5 + unit, x + 65.0 - unit, y + 8.5 - unit]
+                };
+                assert!(actual.iter().chain(&expected).all(|edge| edge.is_finite()));
+                for (edge, wanted) in actual.into_iter().zip(expected) {
+                    assert!(
+                        (edge - wanted).abs() <= 1.5,
+                        "rotation {rotation}, UserUnit {unit}, kind {kind}: rendered {actual:?}, expected {expected:?} (1.5 pt raster tolerance)"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn signature_size_uses_normal_annotation_permissions() {
     let (mut s, id) = page(0, 1.0);

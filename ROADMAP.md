@@ -201,6 +201,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 ## Progress log
 
 - **2026-10-28 (M5, #1288):** Saved Fill & Sign signatures and initials can each retain a resized placement rectangle for future placements, with explicit commands and focused engine, annotation, automation and UI regressions.
+  Unchanged Apply preserves the selected size for typed, drawn and imported-image graphics; changing or removing a saved graphic clears only its own size.
+  The engine save/reopen regression checks visible typed and drawn ink bounds across page rotations and UserUnit values.
   Menu availability reuses the source check until the document or selection changes; invoking the action checks the source again.
   Estimates unchanged.
 

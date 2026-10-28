@@ -9,6 +9,7 @@ The action names the saved target explicitly; the selected appearance can supply
 Future placements use the chosen width and height, including after restarting PdfCraft.
 Existing placed appearances remain unchanged, and setting the preference does not change the PDF or its undo history.
 The signature and initials preferences are independent.
+Accepting an unchanged saved graphic preserves its size preference.
 Accepting a changed saved graphic or removing it clears its size preference.
 Cancelling the dialog or an unsuccessful image import leaves the preference intact.
 

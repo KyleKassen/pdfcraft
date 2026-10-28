@@ -1075,7 +1075,12 @@ fn image_import_cancel_clear_and_errors_preserve_saved_signatures() {
     let path = signature_file("cancel");
     let mut h = harness();
     let original = SavedSig::Typed("Ada Lovelace".into());
+    let signature_size = pdfcraft_engine::SignaturePlacementSize::new(70.0, 16.0).unwrap();
+    let initials_size = pdfcraft_engine::SignaturePlacementSize::new(22.0, 9.0).unwrap();
     h.state_mut().signature = Some(original.clone());
+    h.state_mut().initials = Some(SavedSig::Typed("AL".into()));
+    h.state_mut().signature_placement_size = Some(signature_size);
+    h.state_mut().initials_placement_size = Some(initials_size);
     h.state_mut().execute("sign.fill.signature.change");
     h.run_steps(2);
     h.get_by_label("Image").click();
@@ -1090,12 +1095,16 @@ fn image_import_cancel_clear_and_errors_preserve_saved_signatures() {
     browse_image(&mut h, &path);
     assert_eq!(h.state().signature_draft.image, loaded, "an invalid replacement keeps the previous draft");
     assert!(h.state().toast.as_ref().unwrap().0.contains("Couldn't import"));
+    assert_eq!(h.state().signature_placement_size, Some(signature_size), "a rejected image import must leave the saved size alone");
+    assert_eq!(h.state().initials_placement_size, Some(initials_size));
     h.get_by_label("Clear").click();
     h.run_steps(2);
     assert!(h.state().signature_draft.saved().is_none());
     h.get_by_label("Cancel").click();
     h.run_steps(3);
     assert_eq!(h.state().signature, Some(original));
+    assert_eq!(h.state().signature_placement_size, Some(signature_size));
+    assert_eq!(h.state().initials_placement_size, Some(initials_size));
     assert!(items(&h).is_empty());
     // A picker answer from a closed dialog cannot populate a later draft.
     h.state_mut().execute("sign.fill.signature.change");
@@ -1322,6 +1331,84 @@ fn saved_signature_size_default_is_reused_after_resize_and_restore() {
 }
 
 #[test]
+fn unchanged_apply_preserves_signature_and_initials_sizes_across_repeats_and_restore() {
+    let mut h = harness();
+    let signature = SavedSig::Typed("Synthetic User".into());
+    let initials = SavedSig::Typed("SU".into());
+    let signature_size = pdfcraft_engine::SignaturePlacementSize::new(70.0, 16.0).unwrap();
+    let initials_size = pdfcraft_engine::SignaturePlacementSize::new(22.0, 9.0).unwrap();
+    h.state_mut().signature = Some(signature.clone());
+    h.state_mut().initials = Some(initials.clone());
+    let mut prefs: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    prefs["signature_size"] = serde_json::json!([70.0, 16.0]);
+    prefs["initials_size"] = serde_json::json!([22.0, 9.0]);
+    h.state_mut().restore(&prefs.to_string());
+
+    for command in ["sign.fill.signature.change", "sign.fill.initials.change", "sign.fill.signature.change"] {
+        assert!(h.state_mut().execute(command));
+        h.run_steps(3);
+        h.get_by_label("Apply").click();
+        h.run_steps(3);
+        assert_eq!(h.state().signature, Some(signature.clone()));
+        assert_eq!(h.state().initials, Some(initials.clone()));
+        assert_eq!(h.state().signature_placement_size, Some(signature_size));
+        assert_eq!(h.state().initials_placement_size, Some(initials_size));
+    }
+
+    let mut again = PdfCraftApp::new();
+    again.set_option("language", "en").unwrap();
+    again.restore(&h.state().persist());
+    assert_eq!(again.signature, Some(signature));
+    assert_eq!(again.initials, Some(initials));
+    assert_eq!(again.signature_placement_size, Some(signature_size));
+    assert_eq!(again.initials_placement_size, Some(initials_size));
+}
+
+#[test]
+fn unchanged_drawn_and_imported_image_apply_preserve_their_placement_sizes() {
+    let _gpu = gpu();
+    let path = signature_file("unchanged-apply-image");
+    let mut h = harness();
+    let drawn = SavedSig::Drawn(vec![vec![[0.1, 0.1], [0.5, 0.2], [0.9, 0.1]]]);
+    let signature_size = pdfcraft_engine::SignaturePlacementSize::new(66.0, 18.0).unwrap();
+    let initials_size = pdfcraft_engine::SignaturePlacementSize::new(28.0, 12.0).unwrap();
+    h.state_mut().signature = Some(drawn.clone());
+    h.state_mut().signature_placement_size = Some(signature_size);
+    assert!(h.state_mut().execute("sign.fill.signature.change"));
+    h.run_steps(3);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    assert_eq!(h.state().signature, Some(drawn));
+    assert_eq!(h.state().signature_placement_size, Some(signature_size));
+
+    assert!(h.state_mut().execute("sign.fill.initials"));
+    h.run_steps(3);
+    h.get_by_label("Image").click();
+    h.run_steps(2);
+    browse_image(&mut h, &path);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    let image = h.state().initials.clone();
+    assert!(matches!(image.as_ref(), Some(SavedSig::Image(_))));
+    h.state_mut().initials_placement_size = Some(initials_size);
+
+    assert!(h.state_mut().execute("sign.fill.initials.change"));
+    h.run_steps(3);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    assert_eq!(h.state().initials, image);
+    assert_eq!(h.state().signature_placement_size, Some(signature_size));
+    assert_eq!(h.state().initials_placement_size, Some(initials_size));
+
+    let mut again = PdfCraftApp::new();
+    again.set_option("language", "en").unwrap();
+    again.restore(&h.state().persist());
+    assert_eq!(again.signature_placement_size, Some(signature_size));
+    assert_eq!(again.initials_placement_size, Some(initials_size));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn saved_signature_sizes_have_independent_lifetimes_and_cancel_preserves_them() {
     let mut h = harness();
     h.state_mut().signature = Some(SavedSig::Typed("Synthetic User".into()));
@@ -1348,6 +1435,12 @@ fn saved_signature_sizes_have_independent_lifetimes_and_cancel_preserves_them() 
 
     assert!(h.state_mut().execute("sign.fill.signature.change"));
     h.run_steps(3);
+    h.get_by_label("Type your signature.").click();
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("Changed Synthetic User".into()));
+    h.run_steps(3);
+    assert_eq!(h.state().signature_draft.text, "Changed Synthetic User");
     h.get_by_label("Apply").click();
     h.run_steps(3);
     let after_change: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();

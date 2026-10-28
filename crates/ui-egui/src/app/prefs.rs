@@ -381,14 +381,17 @@ fn restored_signature_size(value: &serde_json::Value) -> Option<pdfcraft_engine:
 }
 
 impl PdfCraftApp {
-    /// An accepted change replaces one saved graphic and its associated future-placement size.
+    /// Accepting an unchanged graphic retains its future-placement size.
+    /// A changed graphic or removal clears only that saved slot's size.
     pub(crate) fn set_saved_signature_slot(&mut self, initials: bool, saved: Option<fill_sign::SavedSig>) {
-        if initials {
-            self.initials = saved;
-            self.initials_placement_size = None;
+        let (slot, size) = if initials {
+            (&mut self.initials, &mut self.initials_placement_size)
         } else {
-            self.signature = saved;
-            self.signature_placement_size = None;
+            (&mut self.signature, &mut self.signature_placement_size)
+        };
+        if saved.is_none() || slot.as_ref() != saved.as_ref() {
+            *size = None;
         }
+        *slot = saved;
     }
 }
