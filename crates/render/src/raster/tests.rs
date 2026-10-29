@@ -2670,6 +2670,27 @@ fn decimal_tiling_extents_equal_to_steps_render_without_truncation() {
     }
 }
 
+/// A large finite Repeat phase is equivalent modulo the actual texture period.
+/// This is the fresh CLI reproduction: blue artwork and a later red sentinel.
+#[test]
+fn tiling_repeat_large_translation_matches_lattice_control() {
+    let content = "q /PC cs /P1 scn 0 0 20 20 re f Q 1 0 0 rg 18 18 1 1 re f";
+    for scale in [1.0, 2.0] {
+        let vector = render_tiling_artwork(tiling_artwork_config_page_pdf("0 0 1 rg 0 0 20 20 re f 1 0 0 rg 18 18 1 1 re f", None, (20, 20)), scale);
+        for matrix in ["1 0 0 1 -6 0", "1 0 0 1 -117440504 0"] {
+            let mut pattern = TilingArtwork::new("0 0 7 7", "0 0 1 rg 0 0 7 7 re f");
+            pattern.steps = (7.0, 7.0);
+            pattern.matrix = matrix;
+            let page = render_tiling_artwork(tiling_artwork_config_page_pdf(content, Some(pattern), (20, 20)), scale);
+            let pixels = page.rgba.as_chunks::<4>().0;
+            let blue = pixels.iter().filter(|p| p[0] < 64 && p[1] < 64 && p[2] > 192 && p[3] > 200).count();
+            assert_eq!(blue, if scale == 1.0 { 399 } else { 1596 }, "Repeat phase {matrix} at {scale} must paint");
+            assert!(page.warnings.is_empty(), "lattice-equivalent Repeat phase must not warn: {:?}", page.warnings);
+            assert_eq!(page.rgba, vector.rgba, "Repeat phase must match the independent vector control");
+        }
+    }
+}
+
 /// Positive source overlap must survive both f32 narrowing and final raster multiplication.
 #[test]
 fn tiling_precision_preserves_small_true_overlaps_and_the_budget_warning() {

@@ -1439,9 +1439,15 @@ impl Renderer {
                             && shows_one_cell(&t.matrix, path_transform, path, reach, bbox, t.x_step, t.y_step)
                         {
                             const BORDER: f64 = 1.0;
-                            let Some((initial_transform, paint)) =
-                                tiling_paint_transforms(bbox, xs, ys, BORDER, t.matrix, *path_transform, (self.ctx.width(), self.ctx.height()))
-                            else {
+                            let Some((initial_transform, paint)) = tiling_paint_transforms(
+                                bbox,
+                                xs,
+                                ys,
+                                BORDER,
+                                t.matrix,
+                                *path_transform,
+                                TilingSampling { canvas: (self.ctx.width(), self.ctx.height()), repeat_period: None },
+                            ) else {
                                 t.report_raster_limit();
                                 return PaintSetup::Nothing;
                             };
@@ -1527,9 +1533,15 @@ impl Renderer {
                             t.report_raster_limit();
                         }
                         let (render_width, render_height) = full_size.unwrap_or((pix_width, pix_height));
-                        let Some((initial_transform, paint)) =
-                            tiling_paint_transforms(bbox, xs, ys, 0.0, t.matrix, *path_transform, (self.ctx.width(), self.ctx.height()))
-                        else {
+                        let Some((initial_transform, paint)) = tiling_paint_transforms(
+                            bbox,
+                            xs,
+                            ys,
+                            0.0,
+                            t.matrix,
+                            *path_transform,
+                            TilingSampling { canvas: (self.ctx.width(), self.ctx.height()), repeat_period: Some((pix_width, pix_height)) },
+                        ) else {
                             t.report_raster_limit();
                             return PaintSetup::Nothing;
                         };
@@ -2644,7 +2656,25 @@ fn tiling_general_inverse(matrix: Affine) -> Option<Affine> {
     inverse.as_coeffs().iter().all(|v| v.is_finite()).then_some(inverse)
 }
 
-fn tiling_paint_transforms(bbox: Rect, xs: f64, ys: f64, border: f64, pattern: Affine, path: Affine, canvas: (u16, u16)) -> Option<(Affine, Affine)> {
+struct TilingSampling {
+    canvas: (u16, u16),
+    // None is the single-cell Pad path; only Repeat has a periodic phase.
+    repeat_period: Option<(u16, u16)>,
+}
+
+fn tiling_paint_transforms(
+    bbox: Rect,
+    xs: f64,
+    ys: f64,
+    border: f64,
+    pattern: Affine,
+    path: Affine,
+    sampling: TilingSampling,
+) -> Option<(Affine, Affine)> {
+    let TilingSampling { canvas, repeat_period } = sampling;
+    if repeat_period.is_some_and(|(width, height)| width == 0 || height == 0) {
+        return None;
+    }
     let (ix, iy) = (1.0 / xs, 1.0 / ys);
     if ![xs, ys, ix, iy].iter().all(|v| v.is_finite() && *v > 0.0) {
         return None;
@@ -2654,17 +2684,83 @@ fn tiling_paint_transforms(bbox: Rect, xs: f64, ys: f64, border: f64, pattern: A
     if !initial.as_coeffs().iter().chain(inverse.as_coeffs().iter()).all(|v| v.is_finite()) {
         return None;
     }
-    let paint = tiling_general_inverse(path)? * pattern * inverse;
+    let path_inverse = tiling_general_inverse(path)?;
+    let paint = path_inverse * pattern * inverse;
     if !paint.as_coeffs().iter().all(|v| v.is_finite()) {
         return None;
     }
     // vello's image encoder generically inverts this composed device transform.
     // Reject unsupported numeric ranges before allocating or interpreting a cell.
     let sampling = tiling_general_inverse(path * paint)?;
-    if !tiling_sampling_supported(sampling, canvas) {
+    if tiling_sampling_supported(sampling, canvas) {
+        // Preserve ordinary accepted paint bytes and filtering behavior.
+        return Some((initial, paint));
+    }
+
+    let period = repeat_period?;
+    // The intended device transform excludes path/path-inverse cancellation.
+    // A finite Repeat translation can be reduced modulo the final pixel period,
+    // keeping the sampler's linear terms and its existing safety envelope.
+    let device = pattern * inverse;
+    let intended = tiling_general_inverse(device)?;
+    let [a, b, c, d, e, f] = intended.as_coeffs();
+    let normalized = Affine::new([a, b, c, d, tiling_repeat_phase(e, period.0)?, tiling_repeat_phase(f, period.1)?]);
+    if !tiling_sampling_supported(normalized, canvas) {
+        return None;
+    }
+    let [a, b, c, d, _, _] = device.as_coeffs();
+    let [_, _, _, _, e, f] = normalized.as_coeffs();
+    // Rebuild from the small phase. Adding a huge delta to the old translation
+    // can cancel away that phase, even with otherwise finite coefficients.
+    let device = Affine::new([a, b, c, d, -(a * e + c * f), -(b * e + d * f)]);
+    let paint = path_inverse * device;
+    if !device.as_coeffs().iter().chain(paint.as_coeffs().iter()).all(|v| v.is_finite()) {
+        return None;
+    }
+    let actual = tiling_general_inverse(path * paint)?;
+    if !tiling_sampling_supported(actual, canvas) || !tiling_repeat_sampling_matches(actual, normalized, canvas, period) {
         return None;
     }
     Some((initial, paint))
+}
+
+fn tiling_repeat_phase(value: f64, period: u16) -> Option<f64> {
+    if !value.is_finite() || period == 0 {
+        return None;
+    }
+    let period = f64::from(period);
+    let phase = value.rem_euclid(period);
+    // A tiny negative remainder can round up to the divisor.
+    phase.is_finite().then_some(if phase == period { 0.0 } else { phase })
+}
+
+// Bound the discrepancy of the actual backend map over the padded canvas.
+// This is a representability check, not a guarantee for ill-conditioned paths.
+// Its allowance depends on bounded intended terms, never on a canceled huge path.
+fn tiling_repeat_sampling_matches(actual: Affine, intended: Affine, canvas: (u16, u16), period: (u16, u16)) -> bool {
+    let [aa, ba, ca, da, ea, fa] = actual.as_coeffs();
+    let [a, b, c, d, e, f] = intended.as_coeffs();
+    let (width, height) = tiling_sampling_extents(canvas);
+    let unit_roundoff = f64::EPSILON / 2.0;
+    let rounding = 128.0 * unit_roundoff / (1.0 - 128.0 * unit_roundoff);
+    [(aa, ca, ea, a, c, e, period.0), (ba, da, fa, b, d, f, period.1)].into_iter().all(|(xa, ya, ra, x, y, r, period)| {
+        let Some(phase) = tiling_repeat_phase(ra - r, period) else {
+            return false;
+        };
+        let distance = phase.min(f64::from(period) - phase);
+        let error = (xa - x).abs() * width + (ya - y).abs() * height + distance;
+        let terms = x.abs() * width + y.abs() * height + r.abs();
+        let allowance = rounding * (terms + 1.0);
+        error.is_finite() && allowance.is_finite() && error <= allowance
+    })
+}
+
+fn tiling_sampling_extents(canvas: (u16, u16)) -> (f64, f64) {
+    // Wide tiles are 256 by 4. Include a whole extra tile's repeated x advances,
+    // four-row splats and pixel centres, even for a partially covered edge tile.
+    let width = u32::from(canvas.0).div_ceil(256) * 256 + 257;
+    let height = u32::from(canvas.1).div_ceil(4) * 4 + 5;
+    (f64::from(width), f64::from(height))
 }
 
 // The selected vello_cpu sampler narrows advances and positions to f32. Its Repeat
@@ -2674,14 +2770,11 @@ fn tiling_paint_transforms(bbox: Rect, xs: f64, ys: f64, border: f64, pattern: A
 // above -0.13, so truncation cannot produce a negative integer index.
 fn tiling_sampling_supported(inverse: Affine, canvas: (u16, u16)) -> bool {
     let [a, b, c, d, e, f] = inverse.as_coeffs();
-    // Wide tiles are 256 by 4. Include a whole extra tile's repeated x advances,
-    // four-row splats and pixel centres, even for a partially covered edge tile.
-    let width = u32::from(canvas.0).div_ceil(256) * 256 + 257;
-    let height = u32::from(canvas.1).div_ceil(4) * 4 + 5;
+    let (width, height) = tiling_sampling_extents(canvas);
     let unit_roundoff = f64::from(f32::EPSILON) / 2.0;
     let rounding = 512.0 * unit_roundoff / (1.0 - 512.0 * unit_roundoff);
     let supported = |x: f64, y: f64, translation: f64| {
-        let terms = x.abs() * f64::from(width) + y.abs() * f64::from(height) + translation.abs();
+        let terms = x.abs() * width + y.abs() * height + translation.abs();
         // Absolute terms prevent cancellation from hiding huge intermediates.
         // gamma512 covers initialization/conversion and <=256 f32 x updates;
         // one more texel covers the bilinear half-pixel footprint and f64 rounding.
@@ -2767,11 +2860,156 @@ fn fold_tiling_cell(source: &Pixmap, width: u16, height: u16) -> Option<Pixmap> 
 mod tiling_precision_tests {
     use super::*;
 
+    const PAD_CANVAS: TilingSampling = TilingSampling { canvas: (20, 20), repeat_period: None };
+
+    fn repeat_canvas(period: (u16, u16)) -> TilingSampling {
+        TilingSampling { canvas: (20, 20), repeat_period: Some(period) }
+    }
+
+    #[test]
+    fn tiling_repeat_recovers_represented_large_and_fractional_phases() {
+        let bbox = Rect::new(0.0, 0.0, 7.0, 5.0);
+        for x in [117_440_504.0, -117_440_504.0, 117_440_504.25, -117_440_504.25, 1e20, -1e20, 1e20 + 16384.0, -1e20 - 16384.0] {
+            let y = -x;
+            let (_, paint) = tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::translate((x, y)), Affine::IDENTITY, repeat_canvas((7, 5)))
+                .expect("recoverable represented Repeat phase must remain supported");
+            let actual = paint.inverse().as_coeffs();
+            assert_eq!(&actual[..4], &[1.0, 0.0, 0.0, 1.0]);
+            assert_eq!(actual[4], (-x).rem_euclid(7.0), "represented x phase {x}");
+            assert_eq!(actual[5], (-y).rem_euclid(5.0), "represented y phase {y}");
+            assert!(tiling_sampling_supported(paint.inverse(), (20, 20)));
+        }
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_keeps_pad_and_linear_limits() {
+        let bbox = Rect::new(0.0, 0.0, 7.0, 5.0);
+        let large = Affine::translate((-117_440_504.25, 117_440_504.5));
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, large, Affine::IDENTITY, PAD_CANVAS).is_none());
+        for period in [(0, 5), (7, 0)] {
+            assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, repeat_canvas(period)).is_none());
+        }
+        for scale in [1e-4, 1e-100] {
+            assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, large * Affine::scale(scale), Affine::IDENTITY, repeat_canvas((7, 5))).is_none());
+        }
+        assert_eq!(tiling_repeat_phase(-f64::MIN_POSITIVE, 7), Some(0.0));
+        for value in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert!(tiling_repeat_phase(value, 7).is_none());
+        }
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_uses_intended_phase_before_path_cancellation() {
+        let bbox = Rect::new(0.0, 0.0, 7.0, 5.0);
+        let path = Affine::translate((1e20, 0.0));
+        let pattern = Affine::translate((-117_440_504.25, 0.0));
+        let old_actual = (path * (path.inverse() * pattern)).inverse();
+        assert_eq!(old_actual.as_coeffs()[4].rem_euclid(7.0), 0.0);
+        assert_eq!(pattern.inverse().as_coeffs()[4].rem_euclid(7.0), 6.25);
+        assert!(
+            tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, pattern, path, repeat_canvas((7, 5))).is_none(),
+            "safe actual sampler must not bless a wrong phase"
+        );
+        let exact = Affine::translate((-117_440_498.0, 0.0));
+        let (_, paint) = tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, exact, path, repeat_canvas((7, 5))).unwrap();
+        assert_eq!((path * paint).inverse().as_coeffs()[4], 0.0);
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_checks_actual_backend_range() {
+        let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let path = Affine::new([1.3, 0.0, 0.0, 1.0, 1e23, 0.0]);
+        let actual = (path * path.inverse()).inverse();
+        assert_eq!(actual.as_coeffs()[4], -16_777_216.0);
+        assert!(!tiling_sampling_supported(actual, (20, 20)));
+        assert!(
+            tiling_repeat_sampling_matches(actual, Affine::IDENTITY, (20, 20), (1, 1)),
+            "whole-period error alone cannot establish safe working positions"
+        );
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::IDENTITY, path, repeat_canvas((1, 1))).is_none());
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_keeps_closed_form_origin_phase() {
+        let bbox = Rect::new(0.25, 0.75, 1.25, 1.75);
+        let pattern = Affine::translate((-117_440_504.5, 24.75));
+        let (initial, paint) = tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, pattern, Affine::IDENTITY, repeat_canvas((7, 5))).unwrap();
+        assert_eq!(initial * Point::new(0.25, 0.75), Point::ZERO);
+        assert_eq!(paint.inverse().as_coeffs(), [1.0, -0.0, -0.0, 1.0, 6.25, 4.5]);
+        // This is a represented source offset, not a fraction rounded away at 1e20.
+        // Metadata-only: large cell coordinates need not be drawable by the cell interpreter.
+        let origin = 1e20 + 16_777_216.0;
+        let bbox = Rect::new(origin, 0.0, origin + 32_768.0, 1.0);
+        assert_eq!(bbox.width(), 32_768.0);
+        let (initial, paint) =
+            tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::translate((-1e20, 0.0)), Affine::IDENTITY, repeat_canvas((7, 5))).unwrap();
+        assert_eq!(initial * Point::new(origin, 0.0), Point::ZERO);
+        assert_eq!(paint.inverse().as_coeffs(), [1.0, -0.0, -0.0, 1.0, 6.0, 0.0]);
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_keeps_closed_form_turned_and_skewed_phase() {
+        let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
+        // Inverse linear [1,0,1,1] and phase [6.25,0.5], independently derived.
+        let pattern = Affine::new([1.0, 0.0, -1.0, 1.0, -234_881_008.75, 117_440_504.5]);
+        for path in [Affine::new([0.0, 2.0, -2.0, 0.0, 31.0, -19.0]), Affine::new([1.0, 0.0, 0.5, 1.0, 17.0, -23.0])] {
+            let (_, paint) = tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, pattern, path, repeat_canvas((7, 5))).unwrap();
+            assert_eq!((path * paint).inverse().as_coeffs(), [1.0, -0.0, 1.0, 1.0, 6.25, 0.5]);
+        }
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_retains_compensated_source_scales() {
+        let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
+        for scale in [1e-200, 1e200] {
+            let pattern = Affine::translate((-117_440_504.25, 117_440_504.5)) * Affine::scale(scale);
+            let (initial, paint) = tiling_paint_transforms(bbox, scale, scale, 0.0, pattern, Affine::IDENTITY, repeat_canvas((7, 5))).unwrap();
+            assert!(initial.as_coeffs().iter().all(|v| v.is_finite()));
+            assert_eq!(paint.inverse().as_coeffs(), [1.0, -0.0, -0.0, 1.0, 6.25, 0.5]);
+        }
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_preserves_ordinary_paint_bytes() {
+        let bbox = Rect::new(-3.0, 7.0, 9.0, 11.0);
+        let pattern = Affine::new([2.0, 0.25, 0.5, -1.0, -12.5, 7.25]);
+        let path = Affine::new([1.0, 0.5, 0.0, 2.0, 20.0, -30.0]);
+        let inverse = Affine::translate((bbox.x0, bbox.y0)) * Affine::scale_non_uniform(1.0 / 3.0, 1.0 / 5.0) * Affine::translate((-1.0, -1.0));
+        let (_, paint) = tiling_paint_transforms(bbox, 3.0, 5.0, 1.0, pattern, path, repeat_canvas((7, 5))).unwrap();
+        assert_eq!(paint.as_coeffs().map(f64::to_bits), (path.inverse() * pattern * inverse).as_coeffs().map(f64::to_bits));
+    }
+
+    #[test]
+    fn tiling_repeat_recovery_preserves_rotated_skewed_and_scaled_maps() {
+        let bbox = Rect::new(-3.0, 7.0, 9.0, 11.0);
+        let phase = Affine::translate((-117_440_504.25, 117_440_504.5));
+        for linear in [
+            Affine::rotate(std::f64::consts::FRAC_PI_2),
+            Affine::new([1.0, 1.0, 0.0, 1.0, 0.0, 0.0]),
+            Affine::rotate(0.37) * Affine::scale_non_uniform(-2.0, 3.0),
+        ] {
+            let pattern = linear * phase;
+            for path in [Affine::IDENTITY, Affine::new([2.0, 0.25, 0.5, 3.0, 100.0, -50.0])] {
+                let inverse = Affine::translate((bbox.x0, bbox.y0)) * Affine::scale_non_uniform(0.5, 0.25) * Affine::translate((-1.0, -1.0));
+                let expected = (pattern * inverse).inverse().as_coeffs();
+                let (_, paint) = tiling_paint_transforms(bbox, 2.0, 4.0, 1.0, pattern, path, repeat_canvas((14, 20))).unwrap();
+                let actual = (path * paint).inverse();
+                let normalized =
+                    Affine::new([expected[0], expected[1], expected[2], expected[3], expected[4].rem_euclid(14.0), expected[5].rem_euclid(20.0)]);
+                assert!(tiling_sampling_supported(actual, (20, 20)));
+                assert!(tiling_repeat_sampling_matches(actual, normalized, (20, 20), (14, 20)));
+                for (actual, expected) in actual.as_coeffs()[..4].iter().zip(&expected[..4]) {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
+            }
+        }
+    }
+
     #[test]
     fn tiling_precision_inverse_preserves_compensated_extremes() {
         for scale in [1e-200, 1e200] {
             let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
-            let (initial, paint) = tiling_paint_transforms(bbox, scale, scale, 0.0, Affine::scale(scale), Affine::IDENTITY, (20, 20)).unwrap();
+            let (initial, paint) = tiling_paint_transforms(bbox, scale, scale, 0.0, Affine::scale(scale), Affine::IDENTITY, PAD_CANVAS).unwrap();
             assert!(initial.as_coeffs().iter().all(|v| v.is_finite()));
             for (actual, expected) in paint.as_coeffs().into_iter().zip(Affine::IDENTITY.as_coeffs()) {
                 assert!((actual - expected).abs() < 1e-12);
@@ -2783,7 +3021,7 @@ mod tiling_precision_tests {
     fn tiling_precision_inverse_preserves_origin_and_border() {
         let bbox = Rect::new(-3.0, 7.0, 9.0, 11.0);
         for border in [0.0, 1.0] {
-            let (initial, paint) = tiling_paint_transforms(bbox, 3.0, 5.0, border, Affine::IDENTITY, Affine::IDENTITY, (20, 20)).unwrap();
+            let (initial, paint) = tiling_paint_transforms(bbox, 3.0, 5.0, border, Affine::IDENTITY, Affine::IDENTITY, PAD_CANVAS).unwrap();
             assert_eq!(initial * Point::new(bbox.x0, bbox.y0), Point::new(border, border));
             let restored = paint * Point::new(border, border);
             assert!((restored.x - bbox.x0).abs() < 1e-12);
@@ -2798,19 +3036,21 @@ mod tiling_precision_tests {
     fn tiling_precision_inverse_rejects_sampler_out_of_range() {
         let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
         // A finite f64 inverse can still overflow the sampler's f32 advances.
-        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::scale(1e-100), Affine::IDENTITY, (20, 20)).is_none());
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::scale(1e-100), Affine::IDENTITY, PAD_CANVAS).is_none());
         // Repeat's reciprocal/floor can produce a negative residual at large finite UVs.
         // On x86 the selected SIMD conversion does not saturate negative integers to zero.
         let position = 117_440_504.0_f32;
         let residual = 7.0_f32.mul_add(-(position * (1.0 / 7.0)).floor(), position);
         assert_eq!(residual, -8.0);
-        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::translate((-f64::from(position), 0.0)), Affine::IDENTITY, (20, 20)).is_none());
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::translate((-f64::from(position), 0.0)), Affine::IDENTITY, PAD_CANVAS).is_none());
         for matrix in [Affine::scale(1e-200), Affine::scale(1e200), Affine::scale(0.0)] {
-            assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, matrix, Affine::IDENTITY, (20, 20)).is_none());
+            assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, matrix, Affine::IDENTITY, PAD_CANVAS).is_none());
         }
-        assert!(tiling_paint_transforms(bbox, 1e-320, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, (20, 20)).is_none());
-        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::IDENTITY, Affine::scale(0.0), (20, 20)).is_none());
-        assert!(tiling_paint_transforms(Rect::new(1e308, 0.0, 1e308, 1.0), 1e200, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, (20, 20)).is_none());
+        assert!(tiling_paint_transforms(bbox, 1e-320, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, PAD_CANVAS).is_none());
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::IDENTITY, Affine::scale(0.0), PAD_CANVAS).is_none());
+        assert!(
+            tiling_paint_transforms(Rect::new(1e308, 0.0, 1e308, 1.0), 1e200, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, PAD_CANVAS).is_none()
+        );
     }
 
     #[test]

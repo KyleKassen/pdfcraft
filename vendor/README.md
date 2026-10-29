@@ -142,3 +142,10 @@ is built in memory.
 | #5178 | Read OpenType-wrapped CFF programs for embedded simple fonts. | `open_type_cff_simple_font` |
 | #5199 | Preserve gray under nonseparable Color blending in vello_cpu. | `nonseparable_gray` |
 | #5228 | Blend supported isolated DeviceCMYK groups in their ink space. | `raster::tests::isolated_cmyk_groups` |
+
+### Tiling-pattern Repeat phase recovery
+
+The local hayro tiling patch reduces an otherwise unsupported finite Repeat sampler translation modulo the final integer texture period.
+It preserves the linear map, ordinary accepted paint bytes and the strict single-cell Pad path.
+Recovery uses the intended device transform before parent-path cancellation, reconstructs from the small phase, and checks both the actual backend working range and its periodic/linear round trip over the padded canvas.
+Ill-conditioned parent transforms can still be declined with the existing PatternTruncated warning; normalization does not recover source precision already lost in represented coordinates.
