@@ -755,14 +755,20 @@ fn signature_number(value: f64) -> Option<String> {
 }
 
 fn signature_dash(d: &Dict) -> Option<String> {
-    // normalized_appearance has resolved/scaled valid BS/D and removed legacy Border.
+    // Normalized drawing supplies scaled BS/D; raw edit preflight also accepts optional D.
     let Some(bs) = d.get(b"BS").and_then(Object::as_dict) else { return Some(String::new()) };
     if bs.name(b"S") != Some(b"D") {
         return Some(String::new());
     }
-    let values = bs.get(b"D")?.as_array()?;
-    if values.is_empty() || values.len() > 64 {
+    let values = match bs.get(b"D") {
+        None | Some(Object::Null) => return Some("[3] 0 d\n".into()), // Table 168; a null dictionary value is absent.
+        Some(value) => value.as_array()?,
+    };
+    if values.len() > 64 {
         return None;
+    }
+    if values.is_empty() {
+        return Some(String::new()); // The valid empty dash array specifies a solid line.
     }
     let mut numbers = Vec::with_capacity(values.len());
     let mut positive = false;

@@ -2516,7 +2516,7 @@ fn malformed_or_unbounded_drawn_signatures_refuse_without_changing_dictionary_or
 fn display_defaults_only_raw_malformed_signature_styles_and_keeps_derived_failures_ap_free() {
     let cases = [
         ("malformed_dash_defaults_solid", true),
-        ("empty_dash_defaults_solid", true),
+        ("empty_dash_is_valid_solid", true),
         ("zero_dash_defaults_solid", true),
         ("malformed_width_defaults", true),
         ("huge_valid_dash_is_not_defaulted", false),
@@ -2528,13 +2528,13 @@ fn display_defaults_only_raw_malformed_signature_styles_and_keeps_derived_failur
         let (mut doc, index, reference) = safety_signature();
         match case {
             "malformed_dash_defaults_solid"
-            | "empty_dash_defaults_solid"
+            | "empty_dash_is_valid_solid"
             | "zero_dash_defaults_solid"
             | "huge_valid_dash_is_not_defaulted"
             | "tiny_valid_dash_is_not_defaulted" => {
                 let dash = match case {
                     "malformed_dash_defaults_solid" => Object::String(PdfString::text("invalid dash")),
-                    "empty_dash_defaults_solid" => Object::Array(Vec::new()),
+                    "empty_dash_is_valid_solid" => Object::Array(Vec::new()),
                     "zero_dash_defaults_solid" => Object::Array(vec![Object::Real(0.0), Object::Real(0.0)]),
                     "huge_valid_dash_is_not_defaulted" => Object::Array(vec![Object::Real(1e308), Object::Real(1.0)]),
                     _ => Object::Array(vec![Object::Real(1e-320), Object::Real(1.0)]),
@@ -2580,7 +2580,7 @@ fn display_defaults_only_raw_malformed_signature_styles_and_keeps_derived_failur
         if expect_display_appearance && case.contains("dash") {
             let shown = ap_content(&display, &displayed_signature);
             assert!(shown.contains(" m\n"), "{case}: compatibility default produces visible paths");
-            assert!(!shown.contains(" d\n"), "{case}: malformed raw dash defaults to solid only for display");
+            assert!(!shown.contains(" d\n"), "{case}: solid appearance contains no dash operator");
         }
         assert_eq!(safety_bytes(&doc), source_before, "{case}: display synthesis mutated saved source bytes");
         assert!(!safety_has_normal(&doc, &list(&doc, 0)[index]), "{case}: source signature remains AP-free");
@@ -2636,4 +2636,179 @@ fn pc_fill_sign_and_wrong_subject_do_not_route_ordinary_ink_through_signature_re
     assert_eq!(rect(saved), [100.0, 100.0, 160.0, 150.0]);
     assert!(matches!(saved.get(b"BS").and_then(Object::as_dict).and_then(|bs| bs.get(b"W")), Some(Object::String(_))));
     assert!(saved.get(b"AP").is_some(), "ordinary Ink receives its normal established appearance");
+}
+
+#[test]
+fn signature_raw_appearance_defaults_only_an_absent_dash_array() {
+    let dictionary = |pattern: Option<&str>| {
+        let pattern = pattern.map_or(String::new(), |value| format!("/D {value}"));
+        let source =
+            format!("<< /Subtype /Ink /Subj (Signature) /Rect [0 0 100 100] /C [0 0 0] /InkList [[10 10 90 90]] /BS << /W 1 /S /D {pattern} >> >>");
+        let doc = document_of(&[source.as_bytes()]);
+        doc.get(ObjRef::new(1, 0)).as_dict().unwrap().clone()
+    };
+    let explicit = appearance::build(&dictionary(Some("[3]"))).expect("explicit [3] positive control");
+    let implicit = appearance::build(&dictionary(None)).expect("optional BS/D must use the valid default [3]");
+    assert_eq!(implicit.decoded().unwrap(), explicit.decoded().unwrap(), "raw preflight and direct drawing must agree on the optional default");
+    assert!(String::from_utf8(implicit.decoded().unwrap()).unwrap().contains("[3] 0 d\n"));
+    let too_many = format!("[{}]", vec!["1"; 65].join(" "));
+    for malformed in ["5", "(bad)", "[0 0]", "[-1 2]", "[(bad) 2]", too_many.as_str()] {
+        assert!(appearance::build(&dictionary(Some(malformed))).is_none(), "present malformed D is not an absent default: {malformed}");
+    }
+    let mut nonfinite = dictionary(Some("[3]"));
+    let Object::Dict(bs) = nonfinite.get_mut(b"BS").unwrap() else { panic!("direct BS dictionary") };
+    bs.set(b"D".to_vec(), Object::Array(vec![Object::Real(f64::INFINITY)]));
+    assert!(appearance::build(&nonfinite).is_none(), "nonfinite present dash remains refused");
+}
+
+#[test]
+fn signature_with_optional_default_dash_can_be_restyled_after_reopen() {
+    let mut doc = document_of(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 100 100] >>",
+        b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+        b"<< /Type /Annot /Subtype /Ink /Subj (Signature) /Rect [0 0 100 100] /C [0 0 0] /InkList [[10 10 90 90]] /BS << /W 1 /S /D >> >>",
+    ]);
+    set_style(&mut doc, 0, 0, StyleChange::new(Some([1.0, 0.0, 0.0]), Some(0.5), Some(2.0), None), &meta("default-dash-style"))
+        .expect("valid optional default dash must pass raw preflight and normalized redraw");
+    let d = list(&doc, 0)[0].clone();
+    let bs = d.get(b"BS").unwrap().as_dict().unwrap();
+    assert_eq!(bs.name(b"S"), Some(&b"D"[..]));
+    assert!(bs.get(b"D").is_none(), "redraw must preserve the stored optional-entry form");
+    assert_eq!(bs.get(b"W").unwrap().as_f64(), Some(2.0));
+    assert_eq!(d.get(b"CA").unwrap().as_f64(), Some(0.5));
+    let content = ap_content(&doc, &d);
+    assert!(content.contains("[30] 0 d\n"), "central normalized AP must scale raw default3 by10: {content}");
+    assert!(content.contains("20 w"), "central normalized AP must scale new width2 by10: {content}");
+    let mut saved = reopen(&doc);
+    set_style(&mut saved, 0, 0, StyleChange::new(Some([0.0, 0.0, 1.0]), None, None, None), &meta("default-dash-after-reopen"))
+        .expect("the optional default remains editable after save/reopen");
+    assert!(ap_content(&saved, &list(&saved, 0)[0]).contains("[30] 0 d\n"));
+}
+
+fn signature_optional_dash_fixture(pattern: Option<&str>) -> Document {
+    let pattern = pattern.map_or(String::new(), |value| format!("/D {value}"));
+    let annotation = format!(
+        "<< /Type /Annot /Subtype /Ink /Subj (Signature) /Rect [0 0 100 100] /C [0 0 0] /InkList [[10 10 90 90]] /NM (stable-id) /T (Ada) /Foo (kept) /BS << /W 1 /S /D /PrivateStyle (kept-style) {pattern} >> >>"
+    );
+    document_of(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 100 100] >>",
+        b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+        annotation.as_bytes(),
+    ])
+}
+
+#[test]
+fn signature_raw_null_dash_uses_optional_default() {
+    let explicit = signature_optional_dash_fixture(Some("[3]"));
+    let null = signature_optional_dash_fixture(Some("null"));
+    let explicit = appearance::build(&list(&explicit, 0)[0]).expect("explicit dash draws");
+    let null = appearance::build(&list(&null, 0)[0]).expect("null dictionary entry uses optional default");
+    assert_eq!(null.decoded().unwrap(), explicit.decoded().unwrap());
+}
+
+#[test]
+fn signature_raw_empty_dash_is_solid() {
+    let doc = signature_optional_dash_fixture(Some("[]"));
+    let empty = list(&doc, 0)[0].clone();
+    let mut solid = empty.clone();
+    let Object::Dict(bs) = solid.get_mut(b"BS").unwrap() else { panic!("direct BS") };
+    bs.set(b"S".to_vec(), Object::name("S"));
+    bs.remove(b"D");
+    let solid = appearance::build(&solid).expect("solid control draws");
+    let empty = appearance::build(&empty).expect("valid empty dash array draws solid");
+    assert_eq!(empty.decoded().unwrap(), solid.decoded().unwrap());
+}
+
+fn assert_signature_normalized_optional_dash(pattern: &str, dashed: bool) {
+    let mut doc = signature_optional_dash_fixture(Some(pattern));
+    // This enters document-aware normalization directly, bypassing set_style's raw preflight.
+    set_appearance(&mut doc, ObjRef::new(4, 0)).expect("valid optional dash form normalizes");
+    let content = ap_content(&doc, &list(&doc, 0)[0]);
+    assert_eq!(content.contains("[30] 0 d\n"), dashed, "{pattern}: {content}");
+    assert_eq!(content.contains(" d\n"), dashed, "{pattern}: {content}");
+    assert!(content.contains(" m\n"), "valid signature has visible paths: {content}");
+}
+
+#[test]
+fn signature_normalized_null_dash_uses_optional_default() {
+    assert_signature_normalized_optional_dash("null", true);
+}
+
+#[test]
+fn signature_normalized_empty_dash_is_solid() {
+    assert_signature_normalized_optional_dash("[]", false);
+}
+
+#[test]
+fn signature_normalized_optional_dash_preserves_one_level_indirect_values() {
+    for (pattern, dashed) in [(Object::Null, true), (Object::Array(Vec::new()), false)] {
+        let mut doc = signature_optional_dash_fixture(Some("[3]"));
+        let value = doc.add(pattern);
+        doc.update_dict(ObjRef::new(4, 0), |d| {
+            let Object::Dict(bs) = d.get_mut(b"BS").unwrap() else { panic!("direct BS") };
+            bs.set(b"D".to_vec(), Object::Ref(value));
+        })
+        .unwrap();
+        set_appearance(&mut doc, ObjRef::new(4, 0)).expect("one-level optional dash value normalizes");
+        let d = list(&doc, 0)[0].clone();
+        assert_eq!(d.get(b"BS").unwrap().as_dict().unwrap().reference(b"D"), Some(value));
+        assert_eq!(ap_content(&doc, &d).contains("[30] 0 d\n"), dashed);
+        assert_eq!(ap_content(&doc, &d).contains(" d\n"), dashed);
+    }
+}
+
+#[test]
+fn signature_legacy_border_empty_is_solid_but_null_array_element_is_invalid() {
+    for (dash, valid) in [(Object::Array(Vec::new()), true), (Object::Null, false)] {
+        let mut doc = signature_optional_dash_fixture(None);
+        doc.update_dict(ObjRef::new(4, 0), |d| {
+            d.remove(b"BS");
+            d.set(b"Border".to_vec(), Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(1.0), dash]));
+        })
+        .unwrap();
+        let before = safety_bytes(&doc);
+        let result = set_appearance(&mut doc, ObjRef::new(4, 0));
+        if valid {
+            result.expect("legacy empty dash is a valid solid pattern");
+            let content = ap_content(&doc, &list(&doc, 0)[0]);
+            assert!(!content.contains(" d\n"));
+            assert!(content.contains(" m\n"));
+        } else {
+            safety_expect_invalid(result, "dash pattern is invalid");
+            assert_eq!(safety_bytes(&doc), before, "dictionary null-as-absent semantics do not apply to array elements");
+        }
+    }
+}
+
+#[test]
+fn signature_optional_dash_forms_preserve_stored_metadata_after_restyle_and_reopen() {
+    for pattern in [None, Some("null"), Some("[3]"), Some("[]")] {
+        let mut doc = signature_optional_dash_fixture(pattern);
+        let before = list(&doc, 0)[0].clone();
+        let expected_dash = before.get(b"BS").unwrap().as_dict().unwrap().get(b"D").cloned();
+        set_style(&mut doc, 0, 0, StyleChange::new(Some([1.0, 0.0, 0.0]), Some(0.5), Some(2.0), None), &meta("style"))
+            .expect("valid optional dash form passes raw preflight and normalized restyle");
+        let mut saved = reopen(&doc);
+        set_style(&mut saved, 0, 0, StyleChange::new(Some([0.0, 0.0, 1.0]), None, None, None), &meta("after-reopen"))
+            .expect("valid optional dash form stays editable after reopening");
+        let saved = reopen(&saved);
+        let d = list(&saved, 0)[0].clone();
+        let bs = d.get(b"BS").unwrap().as_dict().unwrap();
+        assert_eq!(bs.name(b"S"), Some(&b"D"[..]));
+        assert_eq!(bs.get(b"D").cloned(), expected_dash, "stored D spelling preserved: {pattern:?}");
+        assert_eq!(text(bs, b"PrivateStyle"), "kept-style");
+        assert_eq!(text(&d, b"Foo"), "kept");
+        assert_eq!(text(&d, b"NM"), "stable-id");
+        assert_eq!(text(&d, b"T"), "Ada");
+        assert_eq!(bs.get(b"W").unwrap().as_f64(), Some(2.0));
+        assert_eq!(d.get(b"CA").unwrap().as_f64(), Some(0.5));
+        assert_eq!(d.get(b"C").unwrap().as_array().unwrap().iter().map(Object::as_f64).collect::<Vec<_>>(), vec![Some(0.0), Some(0.0), Some(1.0)]);
+        let content = ap_content(&saved, &d);
+        let dashed = pattern != Some("[]");
+        assert_eq!(content.contains("[30] 0 d\n"), dashed, "{pattern:?}: {content}");
+        assert_eq!(content.contains(" d\n"), dashed, "{pattern:?}: {content}");
+        assert!(content.contains("20 w"), "physical line width preserved: {pattern:?}: {content}");
+    }
 }

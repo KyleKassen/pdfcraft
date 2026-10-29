@@ -385,7 +385,10 @@ fn raw_dash(doc: &Document, d: &Dict, usage: SignatureAppearanceUse) -> Result<O
         }
         match bs.get(b"D") {
             None => Object::Array(vec![Object::Real(3.0)]),
-            Some(value) => (*doc.resolve(value)).clone(),
+            Some(value) => match doc.resolve(value).as_ref() {
+                Object::Null => Object::Array(vec![Object::Real(3.0)]), // A null dictionary value is absent.
+                value => value.clone(),
+            },
         }
     } else if let Some(border) = d.get(b"Border") {
         let border = doc.resolve(border);
@@ -399,9 +402,12 @@ fn raw_dash(doc: &Document, d: &Dict, usage: SignatureAppearanceUse) -> Result<O
     } else {
         return Ok(None);
     };
-    let Some(values) = raw.as_array().filter(|a| !a.is_empty() && a.len() <= 64) else {
+    let Some(values) = raw.as_array().filter(|a| a.len() <= 64) else {
         return invalid_raw_dash(usage);
     };
+    if values.is_empty() {
+        return Ok(None); // The valid empty dash array specifies a solid line.
+    }
     let mut pattern = Vec::with_capacity(values.len());
     let mut positive = false;
     for value in values {
