@@ -38,6 +38,22 @@ pub(crate) fn draw_appearance(doc: &mut Document, r: ObjRef) -> Result<(), Annot
     apply_appearance(doc, r, &d, stream)
 }
 
+/// Keep raw restyle checks unchanged, resolving only a recognized signature's indirect BS/D.
+/// The temporary clone must pass both the old raw checks and the actual strict redraw parser.
+/// It is never stored, and a document-free appearance builder never guesses at a reference.
+pub(crate) fn can_restyle(doc: &Document, d: &Dict) -> bool {
+    let indirect = d.get(b"BS").and_then(Object::as_dict).filter(|bs| bs.name(b"S") == Some(b"D") && matches!(bs.get(b"D"), Some(Object::Ref(_))));
+    let Some(bs) = indirect.filter(|_| super::lookup::is_signature_ink(doc, d)) else {
+        return appearance::build(d).is_some();
+    };
+    let Some(value) = bs.get(b"D") else { return false };
+    let mut border = bs.clone();
+    border.set(b"D".to_vec(), (*doc.resolve(value)).clone());
+    let mut resolved = d.clone();
+    resolved.set(b"BS".to_vec(), Object::Dict(border));
+    appearance::build(&resolved).is_some() && build_appearance(doc, d, SignatureAppearanceUse::Edit).is_ok_and(|stream| stream.is_some())
+}
+
 /// Draw the appearance for an annotation dictionary: the expensive half of [`set_appearance`].
 /// Pure from the dictionary and the objects it points at, so [`AppearanceCache`] can reuse it.
 fn build_appearance(doc: &Document, d: &Dict, usage: SignatureAppearanceUse) -> Result<Option<Stream>, AnnotError> {

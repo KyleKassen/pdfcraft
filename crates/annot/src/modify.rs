@@ -513,7 +513,7 @@ pub fn set_style(doc: &mut Document, page: usize, index: usize, change: StyleCha
     let d = annot_dict(doc, r);
     let subtype = String::from_utf8_lossy(d.name(b"Subtype").unwrap_or_default()).into_owned();
     // Check before changing anything: a stale appearance would contradict the new style.
-    if appearance::build(&d).is_none() {
+    if !super::draw::can_restyle(doc, &d) {
         return Err(AnnotError::Unsupported(subtype.clone()));
     }
     if color.is_some_and(|c| !finite(&c)) || opacity.is_some_and(|o| !o.is_finite()) || width.is_some_and(|w| !w.is_finite()) {

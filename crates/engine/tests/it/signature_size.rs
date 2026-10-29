@@ -796,3 +796,57 @@ fn imported_signature_spline_controls_outside_rect_keep_the_existing_display_vie
         assert_loaded_appearance_state_is_unchanged(&session, control, &control_source);
     }
 }
+
+#[test]
+fn indirect_signature_dash_refusal_preserves_document_and_nonempty_undo_redo_history() {
+    for case in ["wrong_type", "cycle", "deep", "too_long", "huge", "scaled_huge", "tiny"] {
+        let (mut session, _, source) = raw_signature_style_fixture(1.0, RawInkStyle::Solid, false);
+        let mut cos = Cos::open(source).unwrap();
+        let page = cos.get(pdfcraft_annot::page_refs(&cos).unwrap()[0]);
+        let annots = cos.resolve(page.as_dict().unwrap().get(b"Annots").unwrap());
+        let annotation = annots.as_array().unwrap()[0].as_ref().unwrap();
+        let pattern = match case {
+            "wrong_type" => Object::name("bad-dash"),
+            "too_long" => Object::Array(vec![Object::Real(1.0); 65]),
+            "huge" => Object::Array(vec![Object::Real(1e308), Object::Real(1.0)]),
+            "scaled_huge" => Object::Array(vec![Object::Real(1e38), Object::Real(1.0)]),
+            "tiny" => Object::Array(vec![Object::Real(1e-320), Object::Real(1.0)]),
+            _ => Object::Null,
+        };
+        let value = cos.add(pattern);
+        if case == "cycle" {
+            cos.set(value, Object::Ref(value));
+        } else if case == "deep" {
+            let second = cos.add(Object::Array(vec![Object::Real(3.0)]));
+            cos.set(value, Object::Ref(second));
+        }
+        cos.update_dict(annotation, |d| {
+            let Object::Dict(bs) = d.get_mut(b"BS").unwrap() else { panic!("direct BS") };
+            bs.set(b"S".to_vec(), Object::name("D"));
+            bs.set(b"D".to_vec(), Object::Ref(value));
+        })
+        .unwrap();
+        let source = Arc::new(pdfcraft_cos::write_full(&cos, &SaveOptions::default()).unwrap());
+        let id = session.open("indirect-dash-synthetic.pdf", None, source, None).unwrap();
+        // Leave both a real undo entry and a real redo entry before testing refusal.
+        session.apply(id, Edit::SetInfo { key: "Title".into(), value: "kept title".into() }).unwrap();
+        session.apply(id, Edit::SetInfo { key: "Author".into(), value: "redo author".into() }).unwrap();
+        session.undo(id).unwrap();
+        let before = session.save_bytes(id).unwrap();
+        let display = session.get(id).unwrap().display.clone();
+        let dirty = session.get(id).unwrap().dirty;
+        let undo = session.get(id).unwrap().can_undo().map(str::to_owned);
+        let redo = session.get(id).unwrap().can_redo().map(str::to_owned);
+        assert!(undo.is_some() && redo.is_some());
+        let result = session.apply(
+            id,
+            Edit::StyleAnnotation { page: 0, index: 0, color: Some([1.0, 0.0, 0.0]), opacity: Some(0.5), width: Some(2.0), endings: None },
+        );
+        assert!(result.is_err(), "{case}: malformed or unrepresentable dash must refuse");
+        assert_eq!(session.save_bytes(id).unwrap(), before, "{case}: document/AP bytes");
+        assert_eq!(session.get(id).unwrap().display, display, "{case}: display");
+        assert_eq!(session.get(id).unwrap().dirty, dirty, "{case}: dirty state");
+        assert_eq!(session.get(id).unwrap().can_undo().map(str::to_owned), undo, "{case}: undo");
+        assert_eq!(session.get(id).unwrap().can_redo().map(str::to_owned), redo, "{case}: redo");
+    }
+}

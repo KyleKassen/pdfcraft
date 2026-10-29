@@ -2812,3 +2812,101 @@ fn signature_optional_dash_forms_preserve_stored_metadata_after_restyle_and_reop
         assert!(content.contains("20 w"), "physical line width preserved: {pattern:?}: {content}");
     }
 }
+
+fn signature_indirect_dash_fixture(pattern: Object) -> (Document, ObjRef) {
+    let mut doc = signature_optional_dash_fixture(Some("[3]"));
+    set_appearance(&mut doc, ObjRef::new(4, 0)).expect("existing AP control");
+    let value = doc.add(pattern);
+    doc.update_dict(ObjRef::new(4, 0), |d| {
+        let Object::Dict(bs) = d.get_mut(b"BS").unwrap() else { panic!("direct BS") };
+        bs.set(b"D".to_vec(), Object::Ref(value));
+    })
+    .unwrap();
+    (doc, value)
+}
+
+#[test]
+fn signature_indirect_dash_props_and_restyle_preserve_reference_after_reopen() {
+    for (pattern, dashed) in [(Object::Array(vec![Object::Real(3.0)]), true), (Object::Null, true), (Object::Array(Vec::new()), false)] {
+        let (mut doc, value) = signature_indirect_dash_fixture(pattern);
+        let before = safety_bytes(&doc);
+        assert!(props(&doc, 0, 0).unwrap().restylable, "supported reference enables actual properties controls");
+        assert_eq!(safety_bytes(&doc), before, "eligibility is pure");
+        set_style(&mut doc, 0, 0, StyleChange::new(Some([1.0, 0.0, 0.0]), Some(0.5), Some(2.0), None), &meta("indirect"))
+            .expect("supported indirect D restyles");
+        let mut saved = reopen(&doc);
+        assert!(props(&saved, 0, 0).unwrap().restylable);
+        set_style(&mut saved, 0, 0, StyleChange::new(Some([0.0, 0.0, 1.0]), None, None, None), &meta("indirect-reopen"))
+            .expect("supported indirect D stays editable");
+        let saved = reopen(&saved);
+        let d = list(&saved, 0)[0].clone();
+        let bs = d.get(b"BS").unwrap().as_dict().unwrap();
+        assert_eq!(bs.reference(b"D"), Some(value));
+        assert_eq!(bs.get(b"W").unwrap().as_f64(), Some(2.0));
+        assert_eq!(text(bs, b"PrivateStyle"), "kept-style");
+        assert_eq!(text(&d, b"Foo"), "kept");
+        assert_eq!(text(&d, b"NM"), "stable-id");
+        assert_eq!(text(&d, b"T"), "Ada");
+        assert_eq!(d.get(b"CA").unwrap().as_f64(), Some(0.5));
+        let content = ap_content(&saved, &d);
+        assert_eq!(content.contains("[30] 0 d\n"), dashed);
+        assert_eq!(content.contains(" d\n"), dashed);
+        assert!(content.contains("20 w") && content.contains(" m\n"));
+    }
+}
+
+#[test]
+fn signature_indirect_dash_invalid_values_refuse_without_mutation() {
+    for case in ["wrong_type", "cycle", "deep", "too_long", "zero", "negative", "huge", "scaled_huge", "tiny"] {
+        let pattern = match case {
+            "wrong_type" => Object::String(PdfString::text("bad")),
+            "too_long" => Object::Array(vec![Object::Real(1.0); 65]),
+            "zero" => Object::Array(vec![Object::Real(0.0), Object::Real(0.0)]),
+            "negative" => Object::Array(vec![Object::Real(-1.0), Object::Real(2.0)]),
+            "huge" => Object::Array(vec![Object::Real(1e308), Object::Real(1.0)]),
+            "scaled_huge" => Object::Array(vec![Object::Real(1e38), Object::Real(1.0)]),
+            "tiny" => Object::Array(vec![Object::Real(1e-320), Object::Real(1.0)]),
+            _ => Object::Null,
+        };
+        let (mut doc, value) = signature_indirect_dash_fixture(pattern);
+        if case == "cycle" {
+            doc.set(value, Object::Ref(value));
+        } else if case == "deep" {
+            let second = doc.add(Object::Array(vec![Object::Real(3.0)]));
+            doc.set(value, Object::Ref(second));
+        }
+        let before = safety_bytes(&doc);
+        let before_ap = ap_content(&doc, &list(&doc, 0)[0]);
+        assert!(!props(&doc, 0, 0).unwrap().restylable, "{case}");
+        assert_eq!(safety_bytes(&doc), before, "{case}: properties preflight mutated source");
+        assert!(set_style(&mut doc, 0, 0, StyleChange::new(Some([1.0, 0.0, 0.0]), Some(0.5), Some(2.0), None), &meta("refused")).is_err(), "{case}");
+        assert_eq!(safety_bytes(&doc), before, "{case}: refusal changed source");
+        assert_eq!(ap_content(&doc, &list(&doc, 0)[0]), before_ap, "{case}: refusal changed AP");
+    }
+}
+
+#[test]
+fn signature_document_free_builder_does_not_guess_indirect_dash_values() {
+    for pattern in [Object::Array(vec![Object::Real(3.0)]), Object::Null, Object::Array(Vec::new()), Object::String(PdfString::text("bad"))] {
+        let (doc, _) = signature_indirect_dash_fixture(pattern);
+        assert!(appearance::build(&list(&doc, 0)[0]).is_none(), "raw builder lacks document context and must refuse Ref D");
+    }
+}
+
+#[test]
+fn signature_indirect_missing_dash_uses_canonical_null_default() {
+    let mut doc = signature_optional_dash_fixture(Some("[3]"));
+    let missing = ObjRef::new(9999, 0);
+    assert!(matches!(doc.get(missing).as_ref(), Object::Null));
+    doc.update_dict(ObjRef::new(4, 0), |d| {
+        let Object::Dict(bs) = d.get_mut(b"BS").unwrap() else { panic!("direct BS") };
+        bs.set(b"D".to_vec(), Object::Ref(missing));
+    })
+    .unwrap();
+    assert!(props(&doc, 0, 0).unwrap().restylable);
+    set_style(&mut doc, 0, 0, StyleChange::new(Some([1.0, 0.0, 0.0]), None, None, None), &meta("missing-default"))
+        .expect("missing object resolves to canonical dictionary Null and default [3]");
+    let d = list(&doc, 0)[0].clone();
+    assert_eq!(d.get(b"BS").unwrap().as_dict().unwrap().reference(b"D"), Some(missing));
+    assert!(ap_content(&doc, &d).contains("[30] 0 d\n"));
+}
