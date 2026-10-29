@@ -1499,12 +1499,22 @@ impl Renderer {
                         let scaled_width = bbox.width() * xs;
                         let scaled_height = bbox.height() * ys;
 
+                        // PdfCraft patch (28): BBox clips the artwork; the steps only place
+                        // copies. Rasterizing a wide BBox straight into the smaller repeat
+                        // texture discarded everything past the first step. Draw one complete
+                        // clipped cell, then fold it into the unchanged integer-pixel period.
+                        // Recheck after rounding: the one-pixel minimum can raise xs/ys again.
+                        let overlaps = scaled_width > f64::from(pix_width) || scaled_height > f64::from(pix_height);
+                        let full_size = overlaps.then(|| tiling_bbox_pixels(scaled_width, scaled_height)).flatten();
+                        if overlaps && full_size.is_none() {
+                            // Keep the bounded legacy crop when the complete raster cannot fit,
+                            // but do not present that partial output as a clean rendering.
+                            t.report_raster_limit();
+                        }
+                        let (render_width, render_height) = full_size.unwrap_or((pix_width, pix_height));
+
                         let mut renderer = Self {
-                            ctx: RenderContext::new_with(
-                                pix_width,
-                                pix_height,
-                                derive_settings(self.ctx.render_settings()),
-                            ),
+                            ctx: RenderContext::new_with(render_width, render_height, derive_settings(self.ctx.render_settings())),
                             // PdfCraft patch: a pattern cell is painted as one artwork, so its
                             // content is never remapped by the reading-colours setting.
                             color_replacement: None,
@@ -1523,25 +1533,29 @@ impl Renderer {
                             image_transparency_stack: Vec::new(),
                             ink: InkState::default(),
                         };
-                        let mut initial_transform = Affine::scale_non_uniform(xs, ys)
-                            * Affine::translate((-bbox.x0, -bbox.y0));
+                        let initial_transform = Affine::scale_non_uniform(xs, ys) * Affine::translate((-bbox.x0, -bbox.y0));
                         t.interpret(&mut renderer, initial_transform, is_stroke);
-                        let mut pix = Pixmap::new(pix_width, pix_height);
+                        // Allocate after interpretation, so nested patterns do not keep these
+                        // temporary full-cell pixel buffers alive at every recursion level.
+                        let Some(mut pix) = try_pattern_pixmap(render_width, render_height) else {
+                            t.report_raster_limit();
+                            return PaintSetup::Nothing;
+                        };
                         renderer.ctx.flush();
                         let mut resources = vello_cpu::Resources::default();
                         renderer.ctx.render_to_pixmap(&mut resources, &mut pix);
-
-                        // TODO: Fix these
-                        if t.x_step < 0.0 {
-                            initial_transform *=
-                                Affine::new([-1.0, 0.0, 0.0, 1.0, scaled_width, 0.0]);
+                        drop(resources);
+                        drop(renderer);
+                        if full_size.is_some() {
+                            let Some(period) = fold_tiling_cell(&pix, pix_width, pix_height) else {
+                                t.report_raster_limit();
+                                return PaintSetup::Nothing;
+                            };
+                            pix = period;
                         }
 
-                        if t.y_step < 0.0 {
-                            initial_transform *=
-                                Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, scaled_height]);
-                        }
-
+                        // Signed steps enumerate the same lattice, not reflected artwork.
+                        // Keep BBox's translation: it anchors this texture's fundamental domain.
                         paint_transform =
                             path_transform.inverse() * t.matrix * initial_transform.inverse();
 
@@ -2580,4 +2594,76 @@ pub fn tiling_cell_pixels(scale: f32, step: f32, max_pixels: f32) -> (u16, f64) 
     // `pixels` is in 1..=u16::MAX, so the cast is exact; `step` is positive and finite here
     // (`exact` is), so the division is too.
     (pixels as u16, pixels / step)
+}
+
+/// PdfCraft patch (28): plan a complete cell only after the repeat scale has been rounded.
+/// The one-pixel minimum can increase that scale beyond the earlier 3000-side clamp.
+/// Bound both pixel payload and vello_cpu 0.0.8's 256-by-4 padded raster dimensions.
+/// Exported for metadata-only regressions; rejected plans never allocate a cell.
+#[doc(hidden)]
+pub fn tiling_bbox_pixels(width: f64, height: f64) -> Option<(u16, u16)> {
+    let side = |value: f64| {
+        let value = value.ceil();
+        if !(value.is_finite() && value > 0.0 && value <= f64::from(u16::MAX)) {
+            return None;
+        }
+        // The finite, positive integer ceiling has been checked before conversion.
+        Some(value as u16)
+    };
+    let (width, height) = (side(width)?, side(height)?);
+    let (w, h) = (u32::from(width), u32::from(height));
+    let padded_w = w.div_ceil(256).checked_mul(256)?;
+    let padded_h = h.div_ceil(4).checked_mul(4)?;
+    // 3000-by-3000, the existing allowance, pads to 3072-by-3000. Long thin
+    // cells can use the same area, but padded side arithmetic must still fit u16.
+    if w.checked_mul(h)? > 9_000_000
+        || padded_w > u32::from(u16::MAX)
+        || padded_h > u32::from(u16::MAX)
+        || padded_w.checked_mul(padded_h)? > 9_216_000
+    {
+        return None;
+    }
+    Some((width, height))
+}
+
+/// Reserve the bounded pixel payload fallibly, preserving conservative transparency metadata.
+fn try_pattern_pixmap(width: u16, height: u16) -> Option<Pixmap> {
+    tiling_bbox_pixels(f64::from(width), f64::from(height))?;
+    let len = usize::from(width).checked_mul(usize::from(height))?;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(len).ok()?;
+    pixels.resize(len, PremulRgba8::from_u32(0));
+    // from_parts' length assertion is infallible: resize used exactly width * height.
+    Some(Pixmap::from_parts(pixels, width, height))
+}
+
+/// Fold the clipped artwork into one integer-pixel repeat period, without replaying its stream.
+/// Both inputs are premultiplied, so source-over must not multiply source RGB by alpha again.
+fn fold_tiling_cell(source: &Pixmap, width: u16, height: u16) -> Option<Pixmap> {
+    let mut period = try_pattern_pixmap(width, height)?;
+    let (width, height) = (usize::from(width), usize::from(height));
+    let source_width = usize::from(source.width());
+    if source_width == 0 {
+        return None;
+    }
+    for (y, row) in source.data().chunks_exact(source_width).enumerate() {
+        let offset = (y % height).checked_mul(width)?;
+        for (x, &pixel) in row.iter().enumerate() {
+            if pixel.a == 0 {
+                continue;
+            }
+            let target = period.data_mut().get_mut(offset.checked_add(x % width)?)?;
+            if pixel.a == 255 {
+                *target = pixel;
+                continue;
+            }
+            let over = |src: u8, dst: u8| {
+                // At most 255 * 255 + 127, then at most 510; all fit u32.
+                let value = u32::from(src) + (u32::from(dst) * (255 - u32::from(pixel.a)) + 127) / 255;
+                value.min(255) as u8
+            };
+            *target = PremulRgba8 { r: over(pixel.r, target.r), g: over(pixel.g, target.g), b: over(pixel.b, target.b), a: over(pixel.a, target.a) };
+        }
+    }
+    Some(period)
 }

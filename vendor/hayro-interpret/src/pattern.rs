@@ -183,6 +183,11 @@ impl Debug for TilingPattern<'_> {
 }
 
 impl<'a> TilingPattern<'a> {
+    /// PdfCraft patch (71): expose a renderer's bounded cell fallback to the page warning sink.
+    pub fn report_raster_limit(&self) {
+        (self.settings.warning_sink)(crate::InterpreterWarning::PatternTruncated);
+    }
+
     pub(crate) fn new(
         stream: Stream<'a>,
         ctx: &Context<'a>,
