@@ -2066,3 +2066,142 @@ fn an_fdf_comment_popup_without_a_rect_is_dropped() {
     let popups = page.iter().filter(|a| dst.resolve(a).as_dict().is_some_and(|d| d.name(b"Subtype") == Some(b"Popup".as_slice()))).count();
     assert_eq!(popups, 0);
 }
+
+fn remove_utf8_continuation_after_cafe(mut bytes: Vec<u8>) -> Vec<u8> {
+    let offset = bytes.windows(2).position(|pair| pair == [0xC3, 0xA9]).expect("fixture contains Café");
+    bytes.remove(offset + 1);
+    bytes
+}
+
+#[test]
+fn malformed_utf8_form_data_is_refused_without_changing_fields_or_comments() {
+    let mut source = blank();
+    set_value(&mut source, "Name", &FieldValue::Text("Café".into())).unwrap();
+    let note = Shape::Note { at: [100.0, 500.0], icon: pdfcraft_annot::NoteIcon::Comment };
+    add_annotation(
+        &mut source,
+        &NewAnnotation { page: 0, style: Style::default_for(&note), shape: note, contents: "new source comment".into(), author: "Ada".into() },
+        &Meta { date: None, id: "new-source-comment".into() },
+    )
+    .unwrap();
+
+    let cases = [
+        ("XFDF", export_xfdf(&source, true, true, "source.pdf").into_bytes()),
+        ("XML", export_data(&source, Format::Xml).into_bytes()),
+        ("CSV", export_data(&source, Format::Csv).into_bytes()),
+        ("tab-delimited", export_data(&source, Format::Txt).into_bytes()),
+    ];
+    let mut trailing_invalid = export_xfdf(&source, true, true, "source.pdf").into_bytes();
+    trailing_invalid.extend_from_slice(b"<!-- trailing metadata: \xff -->");
+    let mut destination = filled();
+    let before_values = values(&destination);
+    let before_comments = comment_view(&destination);
+    let result = import(&mut destination, &trailing_invalid);
+    assert!(
+        matches!(result, Err(DataError::Malformed(_))),
+        "a late invalid byte must be rejected before earlier values or comments are applied: {result:?}"
+    );
+    assert_eq!(values(&destination), before_values);
+    assert_eq!(comment_view(&destination), before_comments);
+
+    for (format, valid_bytes) in cases {
+        let malformed = remove_utf8_continuation_after_cafe(valid_bytes);
+        let mut destination = filled();
+        let before_values = values(&destination);
+        let before_comments = comment_view(&destination);
+
+        let result = import(&mut destination, &malformed);
+        assert!(matches!(result, Err(DataError::Malformed(_))), "{format} with an incomplete UTF-8 sequence must be rejected: {result:?}");
+        assert_eq!(values(&destination), before_values, "{format} failure must not change form values");
+        assert_eq!(comment_view(&destination), before_comments, "{format} failure must not change comments");
+    }
+}
+
+#[test]
+fn data_values_rejects_invalid_utf8_but_keeps_valid_replacement_characters_and_binary_formats() {
+    // Populate every kind so this encoding control does not conflate empty FDF states.
+    let mut source = filled();
+    let text = "Café �";
+    set_value(&mut source, "Name", &FieldValue::Text(text.into())).unwrap();
+
+    let valid_xfdf = export_xfdf(&source, false, true, "source.pdf");
+    let extracted = data_values(valid_xfdf.as_bytes()).unwrap();
+    assert_eq!(extracted.iter().find(|(name, _)| name == "Name").map(|(_, v)| v.as_slice()), Some([text.to_string()].as_slice()));
+
+    // FDF and filled PDFs are binary formats with PDF text-string rules, not generic UTF-8 text files.
+    let fdf = export_fdf(&source, false, true, "source.pdf").unwrap();
+    assert!(std::str::from_utf8(&fdf).is_err(), "FDF control must contain non-UTF-8 bytes");
+    assert_eq!(data_values(&fdf).unwrap(), values(&source));
+    let mut destination = blank();
+    import(&mut destination, &fdf).unwrap();
+    assert_eq!(values(&destination), values(&source));
+    let pdf = write_full(&source, &SaveOptions::default()).unwrap();
+    assert!(std::str::from_utf8(&pdf).is_err(), "PDF control must contain non-UTF-8 bytes");
+    assert_eq!(data_values(&pdf).unwrap(), values(&source));
+    assert_eq!(data_values(&[b"\xff leading bytes\n".as_slice(), &pdf].concat()).unwrap(), values(&source));
+
+    let bad_xfdf = remove_utf8_continuation_after_cafe(export_xfdf(&source, false, true, "source.pdf").into_bytes());
+    assert!(matches!(data_values(&bad_xfdf), Err(DataError::Malformed(_))), "an incomplete UTF-8 sequence is not a field value");
+}
+
+#[test]
+fn valid_utf8_and_utf8_bom_form_data_keep_non_ascii_and_literal_replacement_characters() {
+    let value = "Café �";
+    let mut source = blank();
+    set_value(&mut source, "Name", &FieldValue::Text(value.into())).unwrap();
+
+    for (format, valid) in [
+        ("XFDF", export_xfdf(&source, false, true, "source.pdf").into_bytes()),
+        ("XML", export_data(&source, Format::Xml).into_bytes()),
+        ("CSV", export_data(&source, Format::Csv).into_bytes()),
+        ("tab-delimited", export_data(&source, Format::Txt).into_bytes()),
+    ] {
+        for (variant, bytes) in [("without BOM", valid.clone()), ("with UTF-8 BOM", [b"\xEF\xBB\xBF".as_slice(), &valid].concat())] {
+            let mut destination = blank();
+            let result = import(&mut destination, &bytes);
+            assert!(result.is_ok(), "valid {format} {variant} should import: {result:?}");
+            assert_eq!(values(&destination).iter().find(|(name, _)| name == "Name").map(|(_, v)| v.as_slice()), Some([value.to_string()].as_slice()));
+        }
+    }
+}
+
+#[test]
+fn every_invalid_utf8_class_is_rejected_before_form_data_or_comments_change() {
+    let malformed: [(&str, &[u8]); 6] = [
+        ("lone continuation", b"\x80"),
+        ("truncated multibyte sequence", b"\xC3"),
+        ("overlong encoding", b"\xC0\xAF"),
+        ("encoded surrogate", b"\xED\xA0\x80"),
+        ("value above U+10FFFF", b"\xF4\x90\x80\x80"),
+        ("invalid byte in text", b"\xFF"),
+    ];
+    for (label, bad) in malformed {
+        let mut xfdf =
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><xfdf xmlns=\"http://ns.adobe.com/xfdf/\"><fields><field name=\"Name\"><value>before"
+                .to_vec();
+        xfdf.extend_from_slice(bad);
+        xfdf.extend_from_slice(b"after</value></field></fields></xfdf>");
+
+        assert!(matches!(data_values(&xfdf), Err(DataError::Malformed(_))), "{label}: extraction must reject malformed UTF-8");
+        let mut destination = filled();
+        let before_values = values(&destination);
+        let before_comments = comment_view(&destination);
+        let result = import(&mut destination, &xfdf);
+        assert!(matches!(result, Err(DataError::Malformed(_))), "{label}: import must reject malformed UTF-8: {result:?}");
+        assert_eq!(values(&destination), before_values, "{label}: field values changed despite rejection");
+        assert_eq!(comment_view(&destination), before_comments, "{label}: comments changed despite rejection");
+    }
+
+    // XML processors must reject invalid byte sequences anywhere in the document, even when
+    // they occur in a comment and the selected field value itself is valid.
+    let mut xml = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><fields><!-- unrelated metadata: ".to_vec();
+    xml.push(0xFF);
+    xml.extend_from_slice(b" --><Name>unchanged</Name></fields>");
+    let mut destination = filled();
+    let before_values = values(&destination);
+    let before_comments = comment_view(&destination);
+    let result = import(&mut destination, &xml);
+    assert!(matches!(result, Err(DataError::Malformed(_))), "invalid UTF-8 outside selected fields must still be rejected: {result:?}");
+    assert_eq!(values(&destination), before_values);
+    assert_eq!(comment_view(&destination), before_comments);
+}

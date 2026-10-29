@@ -48,3 +48,7 @@ Import replaces comments with the same `/NM` (and drops the replaced comment's p
 appearances PdfCraft can draw, and sets values through the form's own checks (formats,
 validation, recalculation); read-only fields take imported values, as in Acrobat. XML is read
 with `roxmltree`.
+
+Text form-data imports require valid UTF-8, optionally with a UTF-8 BOM.
+Malformed bytes are rejected before changing fields or comments, including when merging XFDF into a spreadsheet.
+Genuinely encoded U+FFFD is preserved; binary FDF/PDF string encodings and the engine's separate XFA data decoders retain their existing behavior.

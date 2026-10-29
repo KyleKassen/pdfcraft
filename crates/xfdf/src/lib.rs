@@ -134,7 +134,13 @@ pub fn export_data(doc: &Document, format: Format) -> String {
     }
 }
 
+/// Validate the complete text before parsing: repairing invalid bytes would change imported data.
+fn form_data_text(bytes: &[u8]) -> Result<&str, DataError> {
+    std::str::from_utf8(bytes).map_err(|e| DataError::Malformed(format!("form data is not valid UTF-8: {e}; save the text file as UTF-8")))
+}
+
 /// The field values in a form data file (FDF or XFDF) or a filled-in PDF form, in file order.
+/// Malformed UTF-8 in XFDF is rejected; binary FDF and PDF retain their PDF string encodings.
 pub fn data_values(bytes: &[u8]) -> Result<Vec<(String, Vec<String>)>, DataError> {
     if bytes.starts_with(b"%FDF") {
         let fdf = Document::open(std::sync::Arc::new(bytes.to_vec())).map_err(|e| DataError::Malformed(e.to_string()))?;
@@ -158,7 +164,7 @@ pub fn data_values(bytes: &[u8]) -> Result<Vec<(String, Vec<String>)>, DataError
             })
             .collect());
     }
-    let text = String::from_utf8_lossy(bytes);
+    let text = form_data_text(bytes)?;
     let t = text.trim_start_matches('\u{feff}').trim_start();
     check_form_xml_depth(t)?;
     let xml = parse_form_xml(t).map_err(|_| DataError::UnknownFormat)?;
@@ -328,11 +334,13 @@ fn tab_delimited(t: &str) -> Result<Vec<(String, Vec<String>)>, DataError> {
 
 /// Import comments and/or field values from XFDF, FDF, XML, CSV or tab-delimited text
 /// (detected from the content).
+/// Text formats must be valid UTF-8, optionally with a BOM; malformed bytes are rejected before
+/// any fields or comments change. Binary FDF retains its PDF string encodings.
 pub fn import(doc: &mut Document, bytes: &[u8]) -> Result<Report, DataError> {
     let report = if bytes.starts_with(b"%FDF") {
         import_fdf(doc, bytes)?
     } else {
-        let text = String::from_utf8_lossy(bytes);
+        let text = form_data_text(bytes)?;
         let t = text.trim_start_matches('\u{feff}').trim_start();
         if t.starts_with("<?xml") || t.starts_with("<xfdf") || t.starts_with('<') {
             match import_xfdf(doc, t) {
@@ -340,7 +348,7 @@ pub fn import(doc: &mut Document, bytes: &[u8]) -> Result<Report, DataError> {
                 other => other?,
             }
         } else {
-            import_table(doc, &text)?
+            import_table(doc, text)?
         }
     };
     if report.comments == 0 && report.fields == 0 && report.rejected.is_empty() {
