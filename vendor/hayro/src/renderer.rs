@@ -1400,20 +1400,24 @@ impl Renderer {
                         PaintType::Image(image)
                     }
                     Pattern::Tiling(t) => {
-                        const MAX_PIXMAP_SIZE: f32 = 3000.0;
+                        const MAX_PIXMAP_SIZE: f64 = 3000.0;
                         // TODO: Raise this limit and perform downsampling if reached
                         // (see pdftc_100k_0138.pdf).
-                        const MIN_PIXMAP_SIZE: f32 = 1.0;
+                        const MIN_PIXMAP_SIZE: f64 = 1.0;
 
                         let bbox = t.bbox;
-                        let max_x_scale = MAX_PIXMAP_SIZE / bbox.width() as f32;
-                        let min_x_scale = MIN_PIXMAP_SIZE / bbox.width() as f32;
-                        let max_y_scale = MAX_PIXMAP_SIZE / bbox.height() as f32;
-                        let min_y_scale = MIN_PIXMAP_SIZE / bbox.height() as f32;
+                        if ![bbox.width(), bbox.height(), t.x_step.abs(), t.y_step.abs()].iter().all(|v| v.is_finite() && *v > 0.0) {
+                            t.report_raster_limit();
+                            return PaintSetup::Nothing;
+                        }
+                        let max_x_scale = MAX_PIXMAP_SIZE / bbox.width();
+                        let min_x_scale = MIN_PIXMAP_SIZE / bbox.width();
+                        let max_y_scale = MAX_PIXMAP_SIZE / bbox.height();
+                        let min_y_scale = MIN_PIXMAP_SIZE / bbox.height();
 
                         let (mut xs, mut ys) = {
                             let (x, y) = x_y_advances(&(t.matrix));
-                            (x.length() as f32, y.length() as f32)
+                            (x.length(), y.length())
                         };
                         xs = xs.max(min_x_scale).min(max_x_scale);
                         ys = ys.max(min_y_scale).min(max_y_scale);
@@ -1435,8 +1439,16 @@ impl Renderer {
                             && shows_one_cell(&t.matrix, path_transform, path, reach, bbox, t.x_step, t.y_step)
                         {
                             const BORDER: f64 = 1.0;
-                            let pix_width = ((bbox.width() as f32 * xs).ceil() as u16).saturating_add(2);
-                            let pix_height = ((bbox.height() as f32 * ys).ceil() as u16).saturating_add(2);
+                            let Some((initial_transform, paint)) =
+                                tiling_paint_transforms(bbox, xs, ys, BORDER, t.matrix, *path_transform, (self.ctx.width(), self.ctx.height()))
+                            else {
+                                t.report_raster_limit();
+                                return PaintSetup::Nothing;
+                            };
+                            // The chosen scale bounds each side by MAX_PIXMAP_SIZE; clamp
+                            // arithmetic overshoot before adding the existing border.
+                            let pix_width = ((bbox.width() * xs).ceil().min(MAX_PIXMAP_SIZE) as u16).saturating_add(2);
+                            let pix_height = ((bbox.height() * ys).ceil().min(MAX_PIXMAP_SIZE) as u16).saturating_add(2);
                             let mut renderer = Self {
                                 ctx: RenderContext::new_with(
                                     pix_width,
@@ -1459,15 +1471,12 @@ impl Renderer {
                                 image_transparency_stack: Vec::new(),
                                 ink: InkState::default(),
                             };
-                            let initial_transform = Affine::translate((BORDER, BORDER))
-                                * Affine::scale_non_uniform(xs as f64, ys as f64)
-                                * Affine::translate((-bbox.x0, -bbox.y0));
                             t.interpret(&mut renderer, initial_transform, is_stroke);
                             let mut pix = Pixmap::new(pix_width, pix_height);
                             renderer.ctx.flush();
                             let mut resources = vello_cpu::Resources::default();
                             renderer.ctx.render_to_pixmap(&mut resources, &mut pix);
-                            paint_transform = path_transform.inverse() * t.matrix * initial_transform.inverse();
+                            paint_transform = paint;
                             let image = Image {
                                 image: ImageSource::Pixmap(Arc::new(pix)),
                                 sampler: ImageSampler {
@@ -1504,14 +1513,26 @@ impl Renderer {
                         // texture discarded everything past the first step. Draw one complete
                         // clipped cell, then fold it into the unchanged integer-pixel period.
                         // Recheck after rounding: the one-pixel minimum can raise xs/ys again.
-                        let overlaps = scaled_width > f64::from(pix_width) || scaled_height > f64::from(pix_height);
-                        let full_size = overlaps.then(|| tiling_bbox_pixels(scaled_width, scaled_height)).flatten();
+                        let overlaps = bbox.width() > t.x_step.abs() || bbox.height() > t.y_step.abs();
+                        let full_size = overlaps
+                            .then(|| {
+                                let width = tiling_source_side(bbox.width(), t.x_step, scaled_width, pix_width)?;
+                                let height = tiling_source_side(bbox.height(), t.y_step, scaled_height, pix_height)?;
+                                tiling_bbox_pixels(width, height)
+                            })
+                            .flatten();
                         if overlaps && full_size.is_none() {
                             // Keep the bounded legacy crop when the complete raster cannot fit,
                             // but do not present that partial output as a clean rendering.
                             t.report_raster_limit();
                         }
                         let (render_width, render_height) = full_size.unwrap_or((pix_width, pix_height));
+                        let Some((initial_transform, paint)) =
+                            tiling_paint_transforms(bbox, xs, ys, 0.0, t.matrix, *path_transform, (self.ctx.width(), self.ctx.height()))
+                        else {
+                            t.report_raster_limit();
+                            return PaintSetup::Nothing;
+                        };
 
                         let mut renderer = Self {
                             ctx: RenderContext::new_with(render_width, render_height, derive_settings(self.ctx.render_settings())),
@@ -1533,7 +1554,6 @@ impl Renderer {
                             image_transparency_stack: Vec::new(),
                             ink: InkState::default(),
                         };
-                        let initial_transform = Affine::scale_non_uniform(xs, ys) * Affine::translate((-bbox.x0, -bbox.y0));
                         t.interpret(&mut renderer, initial_transform, is_stroke);
                         // Allocate after interpretation, so nested patterns do not keep these
                         // temporary full-cell pixel buffers alive at every recursion level.
@@ -1556,8 +1576,7 @@ impl Renderer {
 
                         // Signed steps enumerate the same lattice, not reflected artwork.
                         // Keep BBox's translation: it anchors this texture's fundamental domain.
-                        paint_transform =
-                            path_transform.inverse() * t.matrix * initial_transform.inverse();
+                        paint_transform = paint;
 
                         let image = Image {
                             image: ImageSource::Pixmap(Arc::new(pix)),
@@ -2535,9 +2554,9 @@ fn stroke_reach(stroke: &kurbo::Stroke) -> f64 {
 }
 
 /// PdfCraft patch (20): whether a cell's scale can draw it at full size: finite and positive. A
-/// `/BBox` too thin to divide by (1e-40 wide passes the zero-area check) gives an infinite scale,
-/// which would send non-finite geometry to the cell renderer; such a cell keeps the old path.
-pub fn usable_cell_scale(xs: f32, ys: f32) -> bool {
+/// `/BBox` too thin to divide by can give an infinite scale. The normal integer-period path
+/// may recover a usable scale; both paths validate their actual transforms before rendering.
+pub fn usable_cell_scale(xs: f64, ys: f64) -> bool {
     xs.is_finite() && ys.is_finite() && xs > 0.0 && ys > 0.0
 }
 
@@ -2545,13 +2564,13 @@ pub fn usable_cell_scale(xs: f32, ys: f32) -> bool {
 /// device pixels past it), mapped into the space of a tiling pattern with matrix `matrix`, can
 /// only meet the first cell's `/BBox`: every other cell's content lies a whole step or more
 /// away. False when the matrix can't be inverted or the bounds aren't finite.
-pub(crate) fn shows_one_cell(matrix: &Affine, path_transform: &Affine, path: &BezPath, reach: f64, bbox: Rect, x_step: f32, y_step: f32) -> bool {
+pub(crate) fn shows_one_cell(matrix: &Affine, path_transform: &Affine, path: &BezPath, reach: f64, bbox: Rect, x_step: f64, y_step: f64) -> bool {
     if matrix.determinant().abs() < 1e-12 || !matrix.determinant().is_finite() {
         return false;
     }
     let device = (*path_transform * path.clone()).bounding_box().inflate(reach, reach);
     let bounds = (matrix.inverse() * device.to_path(0.1)).bounding_box();
-    let (sx, sy) = (f64::from(x_step.abs()), f64::from(y_step.abs()));
+    let (sx, sy) = (x_step.abs(), y_step.abs());
     let finite = [bounds.x0, bounds.y0, bounds.x1, bounds.y1, sx, sy].iter().all(|v| v.is_finite());
     // Cell k's content spans `bbox + k × step`; with k = ±1 out of reach, so is every other.
     finite
@@ -2564,7 +2583,7 @@ pub(crate) fn shows_one_cell(matrix: &Affine, path_transform: &Affine, path: &Be
 /// PdfCraft patch: the scale for a tiling cell, lowered so that the cell pixmap (`|step| ×
 /// scale` pixels a side) stays within `max_pixels`. Geometry is unchanged (the pattern transform
 /// is derived from the scale); an over-large step only renders at lower resolution.
-pub fn tiling_cell_scale(scale: f32, step: f32, max_pixels: f32) -> f32 {
+pub fn tiling_cell_scale(scale: f64, step: f64, max_pixels: f64) -> f64 {
     let step = step.abs();
     if step.is_finite() && step > 0.0 && scale * step > max_pixels {
         max_pixels / step
@@ -2580,10 +2599,10 @@ pub fn tiling_cell_scale(scale: f32, step: f32, max_pixels: f32) -> f32 {
 /// are displaced by multiples of `/XStep` and `/YStep`). The side is kept within 1 and
 /// `max_pixels` (itself at most `u16::MAX`). When `scale × step` isn't finite and positive,
 /// `scale` is kept and the side is `max_pixels` for an infinite product, 1 otherwise.
-pub fn tiling_cell_pixels(scale: f32, step: f32, max_pixels: f32) -> (u16, f64) {
+pub fn tiling_cell_pixels(scale: f64, step: f64, max_pixels: f64) -> (u16, f64) {
     // A whole number of pixels; `max` and `min` (not `clamp`, which panics on NaN) make a NaN cap 1.
-    let max = f64::from(max_pixels).floor().max(1.0).min(f64::from(u16::MAX));
-    let (scale, step) = (f64::from(scale), f64::from(step.abs()));
+    let max = max_pixels.floor().max(1.0).min(f64::from(u16::MAX));
+    let step = step.abs();
     let exact = scale * step;
     if !(exact.is_finite() && exact > 0.0) {
         let pixels = if exact == f64::INFINITY { max } else { 1.0 };
@@ -2594,6 +2613,82 @@ pub fn tiling_cell_pixels(scale: f32, step: f32, max_pixels: f32) -> (u16, f64) 
     // `pixels` is in 1..=u16::MAX, so the cast is exact; `step` is positive and finite here
     // (`exact` is), so the division is too.
     (pixels as u16, pixels / step)
+}
+
+// Classify source geometry before scaling. A multiply after period/step division
+// can round an equal extent above its period or erase a genuine positive overlap.
+fn tiling_source_side(extent: f64, step: f64, scaled: f64, period: u16) -> Option<f64> {
+    let step = step.abs();
+    if ![extent, step, scaled].iter().all(|v| v.is_finite() && *v > 0.0) || period == 0 {
+        return None;
+    }
+    let pixels = scaled.ceil();
+    let period = f64::from(period);
+    Some(if extent < step {
+        pixels.min(period)
+    } else if extent == step {
+        period
+    } else {
+        pixels.max(period + 1.0)
+    })
+}
+
+// Only validate general inversions that are actually used. The known diagonal
+// cell transform below has an analytic inverse even when its determinant overflows.
+fn tiling_general_inverse(matrix: Affine) -> Option<Affine> {
+    let determinant = matrix.determinant();
+    if !matrix.as_coeffs().iter().all(|v| v.is_finite()) || !determinant.is_finite() || determinant == 0.0 {
+        return None;
+    }
+    let inverse = matrix.inverse();
+    inverse.as_coeffs().iter().all(|v| v.is_finite()).then_some(inverse)
+}
+
+fn tiling_paint_transforms(bbox: Rect, xs: f64, ys: f64, border: f64, pattern: Affine, path: Affine, canvas: (u16, u16)) -> Option<(Affine, Affine)> {
+    let (ix, iy) = (1.0 / xs, 1.0 / ys);
+    if ![xs, ys, ix, iy].iter().all(|v| v.is_finite() && *v > 0.0) {
+        return None;
+    }
+    let initial = Affine::translate((border, border)) * Affine::scale_non_uniform(xs, ys) * Affine::translate((-bbox.x0, -bbox.y0));
+    let inverse = Affine::translate((bbox.x0, bbox.y0)) * Affine::scale_non_uniform(ix, iy) * Affine::translate((-border, -border));
+    if !initial.as_coeffs().iter().chain(inverse.as_coeffs().iter()).all(|v| v.is_finite()) {
+        return None;
+    }
+    let paint = tiling_general_inverse(path)? * pattern * inverse;
+    if !paint.as_coeffs().iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    // vello's image encoder generically inverts this composed device transform.
+    // Reject unsupported numeric ranges before allocating or interpreting a cell.
+    let sampling = tiling_general_inverse(path * paint)?;
+    if !tiling_sampling_supported(sampling, canvas) {
+        return None;
+    }
+    Some((initial, paint))
+}
+
+// The selected vello_cpu sampler narrows advances and positions to f32. Its Repeat
+// remainder only clamps the upper bound; on x86, a negative integer residual can
+// become a large u32 index. Keep actual working positions within 2^20 texels:
+// for any u16 image side, reciprocal/multiply rounding then leaves the residual
+// above -0.13, so truncation cannot produce a negative integer index.
+fn tiling_sampling_supported(inverse: Affine, canvas: (u16, u16)) -> bool {
+    let [a, b, c, d, e, f] = inverse.as_coeffs();
+    // Wide tiles are 256 by 4. Include a whole extra tile's repeated x advances,
+    // four-row splats and pixel centres, even for a partially covered edge tile.
+    let width = u32::from(canvas.0).div_ceil(256) * 256 + 257;
+    let height = u32::from(canvas.1).div_ceil(4) * 4 + 5;
+    let unit_roundoff = f64::from(f32::EPSILON) / 2.0;
+    let rounding = 512.0 * unit_roundoff / (1.0 - 512.0 * unit_roundoff);
+    let supported = |x: f64, y: f64, translation: f64| {
+        let terms = x.abs() * f64::from(width) + y.abs() * f64::from(height) + translation.abs();
+        // Absolute terms prevent cancellation from hiding huge intermediates.
+        // gamma512 covers initialization/conversion and <=256 f32 x updates;
+        // one more texel covers the bilinear half-pixel footprint and f64 rounding.
+        let bound = (1.0 + rounding) * terms + 1.0;
+        bound.is_finite() && bound <= 1_048_576.0
+    };
+    supported(a, c, e) && supported(b, d, f)
 }
 
 /// PdfCraft patch (28): plan a complete cell only after the repeat scale has been rounded.
@@ -2666,4 +2761,95 @@ fn fold_tiling_cell(source: &Pixmap, width: u16, height: u16) -> Option<Pixmap> 
         }
     }
     Some(period)
+}
+
+#[cfg(test)]
+mod tiling_precision_tests {
+    use super::*;
+
+    #[test]
+    fn tiling_precision_inverse_preserves_compensated_extremes() {
+        for scale in [1e-200, 1e200] {
+            let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
+            let (initial, paint) = tiling_paint_transforms(bbox, scale, scale, 0.0, Affine::scale(scale), Affine::IDENTITY, (20, 20)).unwrap();
+            assert!(initial.as_coeffs().iter().all(|v| v.is_finite()));
+            for (actual, expected) in paint.as_coeffs().into_iter().zip(Affine::IDENTITY.as_coeffs()) {
+                assert!((actual - expected).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn tiling_precision_inverse_preserves_origin_and_border() {
+        let bbox = Rect::new(-3.0, 7.0, 9.0, 11.0);
+        for border in [0.0, 1.0] {
+            let (initial, paint) = tiling_paint_transforms(bbox, 3.0, 5.0, border, Affine::IDENTITY, Affine::IDENTITY, (20, 20)).unwrap();
+            assert_eq!(initial * Point::new(bbox.x0, bbox.y0), Point::new(border, border));
+            let restored = paint * Point::new(border, border);
+            assert!((restored.x - bbox.x0).abs() < 1e-12);
+            assert!((restored.y - bbox.y0).abs() < 1e-12);
+            for (actual, expected) in (initial * paint).as_coeffs().into_iter().zip(Affine::IDENTITY.as_coeffs()) {
+                assert!((actual - expected).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn tiling_precision_inverse_rejects_sampler_out_of_range() {
+        let bbox = Rect::new(0.0, 0.0, 1.0, 1.0);
+        // A finite f64 inverse can still overflow the sampler's f32 advances.
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::scale(1e-100), Affine::IDENTITY, (20, 20)).is_none());
+        // Repeat's reciprocal/floor can produce a negative residual at large finite UVs.
+        // On x86 the selected SIMD conversion does not saturate negative integers to zero.
+        let position = 117_440_504.0_f32;
+        let residual = 7.0_f32.mul_add(-(position * (1.0 / 7.0)).floor(), position);
+        assert_eq!(residual, -8.0);
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::translate((-f64::from(position), 0.0)), Affine::IDENTITY, (20, 20)).is_none());
+        for matrix in [Affine::scale(1e-200), Affine::scale(1e200), Affine::scale(0.0)] {
+            assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, matrix, Affine::IDENTITY, (20, 20)).is_none());
+        }
+        assert!(tiling_paint_transforms(bbox, 1e-320, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, (20, 20)).is_none());
+        assert!(tiling_paint_transforms(bbox, 1.0, 1.0, 0.0, Affine::IDENTITY, Affine::scale(0.0), (20, 20)).is_none());
+        assert!(tiling_paint_transforms(Rect::new(1e308, 0.0, 1e308, 1.0), 1e200, 1.0, 0.0, Affine::IDENTITY, Affine::IDENTITY, (20, 20)).is_none());
+    }
+
+    #[test]
+    fn tiling_precision_sampler_bounds_cover_repeat_and_plain_advances() {
+        for side in [1_u16, 2, 7, 3000, 3002, u16::MAX] {
+            let side = f32::from(side);
+            for position in [-1_048_576.0_f32, -1_048_575.5, -7.1, 0.0, 7.1, 1_048_575.5, 1_048_576.0] {
+                let multiple = (position * (1.0 / side)).floor();
+                for residual in [side.mul_add(-multiple, position), position - multiple * side] {
+                    let limited = residual.min(side - 1.0);
+                    assert!(limited > -1.0 && limited <= side - 1.0, "side {side}, position {position}, residual {residual}");
+                }
+            }
+        }
+        let sampling = Affine::new([1000.0, 10.0, 50.0, 1.0, -100.0, 50.0]);
+        assert!(tiling_sampling_supported(sampling, (20, 20)));
+        // Reproduce the plain painter's repeated f32 additions over one whole wide tile.
+        let start = sampling * Point::new(256.5, 4.5);
+        let mut x = start.x as f32;
+        let mut y = start.y as f32;
+        for _ in 0..256 {
+            assert!(x.abs() + 0.5 <= 1_048_576.0 && y.abs() + 0.5 <= 1_048_576.0);
+            x += 1000.0;
+            y += 10.0;
+        }
+        assert!(!tiling_sampling_supported(Affine::translate((1_048_576.0, 0.0)), (20, 20)));
+        assert!(!tiling_sampling_supported(Affine::new([1e100, 0.0, -1e100, 1.0, 0.0, 0.0]), (20, 20)));
+        assert!(!tiling_sampling_supported(Affine::new([f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0]), (20, 20)));
+    }
+
+    #[test]
+    fn tiling_precision_source_sides_keep_strict_geometry() {
+        let step = 7.3_f64;
+        assert_eq!(tiling_source_side(step, step, 3000.0000000000005, 3000), Some(3000.0));
+        assert_eq!(tiling_source_side(f64::from_bits(step.to_bits() + 1), step, 3000.0, 3000), Some(3001.0));
+        assert_eq!(tiling_source_side(0.01, 1.0, 30.0, 3000), Some(30.0));
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(tiling_source_side(invalid, step, 1.0, 1).is_none());
+            assert!(tiling_source_side(step, step, invalid, 1).is_none());
+        }
+    }
 }

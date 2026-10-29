@@ -161,8 +161,8 @@ pub enum InterpreterWarning {
     /// read, or a Separation or DeviceN tint transform that cannot be evaluated) and was painted
     /// in a fallback colour. Reported at most once per content stream.
     ColorFallback,
-    /// PdfCraft patch (71): a tiling cell exceeded the bounded raster surface or its allocation
-    /// failed, so some pattern artwork could not be drawn.
+    /// PdfCraft patch (71): a tiling cell exceeded its raster/allocation budget or numeric
+    /// geometry/sampling range, so some pattern artwork could not be drawn.
     PatternTruncated,
 }
 

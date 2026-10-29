@@ -2508,11 +2508,11 @@ trailer << /Root 1 0 R >>
 #[test]
 fn tiling_cells_stay_small_whatever_the_step() {
     assert_eq!(hayro::tiling_cell_scale(2.0, 10.0, 3000.0), 2.0, "ordinary cells keep their scale");
-    for step in [1.0e5f32, -1.0e5, 4.0e9] {
+    for step in [1.0e5f64, -1.0e5, 4.0e9] {
         let s = hayro::tiling_cell_scale(2.0, step, 3000.0);
         assert!(s * step.abs() <= 3000.5, "{step}: {s}");
     }
-    assert_eq!(hayro::tiling_cell_scale(2.0, f32::INFINITY, 3000.0), 2.0);
+    assert_eq!(hayro::tiling_cell_scale(2.0, f64::INFINITY, 3000.0), 2.0);
     assert_eq!(hayro::tiling_cell_scale(2.0, 0.0, 3000.0), 2.0);
     // End to end: such a pattern renders, and the page's other content still draws.
     let content = "/Pattern cs /P1 scn 0 0 40 40 re f 1 0 0 rg 0 0 4 4 re f";
@@ -2585,6 +2585,10 @@ impl<'a> TilingArtwork<'a> {
 }
 
 fn tiling_artwork_config_pdf(content: &str, pattern: Option<TilingArtwork<'_>>) -> Vec<u8> {
+    tiling_artwork_config_page_pdf(content, pattern, (612, 792))
+}
+
+fn tiling_artwork_config_page_pdf(content: &str, pattern: Option<TilingArtwork<'_>>, (width, height): (u32, u32)) -> Vec<u8> {
     let resources = match pattern.as_ref() {
         Some(p) if p.uncolored => "/ColorSpace << /PC [/Pattern /DeviceRGB] >> /Pattern << /P1 5 0 R >>",
         Some(_) => "/ColorSpace << /PC /Pattern >> /Pattern << /P1 5 0 R >>",
@@ -2593,7 +2597,7 @@ fn tiling_artwork_config_pdf(content: &str, pattern: Option<TilingArtwork<'_>>) 
     let mut objects = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << {resources} >> /Contents 4 0 R >>").into_bytes(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] /Resources << {resources} >> /Contents 4 0 R >>").into_bytes(),
         format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).into_bytes(),
     ];
     if let Some(TilingArtwork { bbox, steps: (x_step, y_step), matrix, cell, uncolored, resources }) = pattern {
@@ -2628,6 +2632,141 @@ fn render_tiling_artwork(bytes: Vec<u8>, scale: f32) -> RenderedPage {
     let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, scale, ..Default::default() });
     assert!(page.error.is_none(), "{:?}", page.error);
     page
+}
+
+/// Equal decimal extents must not become an over-budget cell after coordinate conversion.
+/// These are the tiny-page CLI reproduction and controls, with visible ink and a later sentinel.
+#[test]
+fn decimal_tiling_extents_equal_to_steps_render_without_truncation() {
+    let cases = [
+        ("zero-origin", "0 0 7.1 7.1", "0 0 7.1 7.1", "500 0 0 500 0 0", (7.1, 7.1)),
+        ("translated", "0.2 0.2 7.3 7.3", "0.2 0.2 7.1 7.1", "500 0 0 500 -100 -100", (7.1, 7.1)),
+        ("translated-x", "0.2 0 7.3 7.1", "0.2 0 7.1 7.1", "500 0 0 500 -100 0", (7.1, 7.1)),
+        ("translated-y", "0 0.2 7.1 7.3", "0 0.2 7.1 7.1", "500 0 0 500 0 -100", (7.1, 7.1)),
+        ("negative-x", "0.2 0.2 7.3 7.3", "0.2 0.2 7.1 7.1", "500 0 0 500 -100 -100", (-7.1, 7.1)),
+        ("negative-y", "0.2 0.2 7.3 7.3", "0.2 0.2 7.1 7.1", "500 0 0 500 -100 -100", (7.1, -7.1)),
+        ("extra-bbox-entry", "0.2 0.2 7.3 7.3 42", "0.2 0.2 7.1 7.1", "500 0 0 500 -100 -100", (7.1, 7.1)),
+    ];
+    for scale in [1.0, 2.0] {
+        let mut reference = None;
+        for (name, bbox, rect, matrix, steps) in cases {
+            let body = format!("0 0 1 rg {rect} re f");
+            let mut pattern = TilingArtwork::new(bbox, &body);
+            pattern.steps = steps;
+            pattern.matrix = matrix;
+            let pdf = tiling_artwork_config_page_pdf("q /PC cs /P1 scn 0 0 20 20 re f Q 1 0 0 rg 18 18 1 1 re f", Some(pattern), (20, 20));
+            let page = render_tiling_artwork(pdf, scale);
+            let pixels = page.rgba.as_chunks::<4>().0;
+            let blue = pixels.iter().filter(|p| p[0] < 64 && p[1] < 64 && p[2] > 192 && p[3] > 200).count();
+            let red = pixels.iter().filter(|p| p[0] > 192 && p[1] < 64 && p[2] < 64 && p[3] > 200).count();
+            assert!(blue > 100 && red > 0, "{name} at {scale}: actual pattern ink and later sentinel must paint");
+            assert!(page.warnings.is_empty(), "equal decimal BBox/step must not warn: {name} at {scale}: {:?}", page.warnings);
+            if let Some(expected) = &reference {
+                assert!(&page.rgba == expected, "{name} at {scale}: equal geometry must match the control pixels");
+            } else {
+                reference = Some(page.rgba);
+            }
+        }
+    }
+}
+
+/// Positive source overlap must survive both f32 narrowing and final raster multiplication.
+#[test]
+fn tiling_precision_preserves_small_true_overlaps_and_the_budget_warning() {
+    for extent in [7.30000005, f64::from_bits(7.3_f64.to_bits() + 1)] {
+        for scale in [1.0, 2.0] {
+            let bbox = format!("0 0 {extent} 7.3");
+            let cell = format!("0 0 1 rg 0 0 {extent} 7.3 re f");
+            let mut pattern = TilingArtwork::new(&bbox, &cell);
+            pattern.steps = (7.3, 7.3);
+            pattern.matrix = "500 0 0 500 0 0";
+            let page = render_tiling_artwork(
+                tiling_artwork_config_page_pdf("q /PC cs /P1 scn 0 0 20 20 re f Q 1 0 0 rg 18 18 1 1 re f", Some(pattern), (20, 20)),
+                scale,
+            );
+            assert_eq!(
+                page.warnings,
+                vec![RenderWarning::PatternTruncated],
+                "actual overlap {extent} at {scale} needs an extra column beyond the 9m budget"
+            );
+            let pixels = page.rgba.as_chunks::<4>().0;
+            assert!(
+                pixels.iter().filter(|p| p[0] < 64 && p[1] < 64 && p[2] > 192 && p[3] > 200).count() > 100,
+                "bounded fallback must retain actual ink"
+            );
+            assert!(pixels.iter().any(|p| p[0] > 192 && p[1] < 64 && p[2] < 64 && p[3] > 200), "later sentinel must paint");
+        }
+    }
+}
+
+/// A narrow non-overlap axis must not spend a whole repeat period of transparent pixels.
+/// Translate its solid interior over the page, away from the filtered texture boundary.
+#[test]
+fn tiling_precision_keeps_narrow_axis_with_other_axis_overlap_within_budget() {
+    for (bbox, rect, matrix) in [("0 0 0.01 30000", "0 0 0.01 1", "300000 0 0 1 -1000 0"), ("0 0 30000 0.01", "0 0 1 0.01", "1 0 0 300000 0 -1000")] {
+        for scale in [1.0, 2.0] {
+            let cell = format!("0 0 1 rg {rect} re f");
+            let mut pattern = TilingArtwork::new(bbox, &cell);
+            pattern.steps = (1.0, 1.0);
+            pattern.matrix = matrix;
+            let page = render_tiling_artwork(
+                tiling_artwork_config_page_pdf("q /PC cs /P1 scn 0 0 20 20 re f Q 1 0 0 rg 18 18 1 1 re f", Some(pattern), (20, 20)),
+                scale,
+            );
+            assert!(page.warnings.is_empty(), "narrow complete source fits raw/padded budgets: {bbox} at {scale}: {:?}", page.warnings);
+            let pixels = page.rgba.as_chunks::<4>().0;
+            let blue = pixels.iter().filter(|p| p[0] < 64 && p[1] < 64 && p[2] > 192 && p[3] > 200).count();
+            let red = pixels.iter().filter(|p| p[0] > 192 && p[1] < 64 && p[2] < 64 && p[3] > 200).count();
+            assert_eq!(blue, if scale == 1.0 { 399 } else { 1596 }, "complete narrow artwork must remain visible");
+            assert_eq!(red, if scale == 1.0 { 1 } else { 4 }, "later sentinel must paint");
+        }
+    }
+}
+
+/// Hostile numeric geometry is bounded and observable, while later page paint survives.
+#[test]
+fn tiling_precision_extreme_geometry_preserves_later_content() {
+    let huge = format!("{:.0}", 1e308);
+    let wide = format!("{:.0}", 1e40);
+    let tiny = format!("0.{}1", "0".repeat(319));
+    let matrix_tiny = format!("0.{}1 0 0 0.{}1 0 0", "0".repeat(99), "0".repeat(99));
+    let matrix_wide = format!("0.{}1 0 0 1 0 0", "0".repeat(37));
+    let cases = [
+        (format!("-{huge} 0 {huge} 1"), (15.0, 15.0), "1 0 0 1 0 0".to_owned(), true, false),
+        (format!("0 -{huge} 1 {huge}"), (15.0, 15.0), "1 0 0 1 0 0".to_owned(), true, false),
+        (format!("-{huge} -{huge} {huge} {huge}"), (15.0, 15.0), "1 0 0 1 0 0".to_owned(), true, false),
+        // The number reader underflows this token to zero; retain its existing silent
+        // zero-area rejection. Reciprocal overflow is tested directly in hayro.
+        (format!("0 0 {tiny} 1"), (1.0, 1.0), "1 0 0 1 0 0".to_owned(), false, false),
+        ("0 0 1 1".to_owned(), (1.0, 1.0), matrix_tiny, true, false),
+        (format!("0 0 {wide} 1"), (1e40, 1.0), matrix_wide, false, false),
+        ("0 0 10 10".to_owned(), (1e40, 1e40), "1 0 0 1 0 0".to_owned(), false, true),
+        ("0 0 10 10".to_owned(), (-1e40, -1e40), "1 0 0 1 0 0".to_owned(), false, true),
+    ];
+    for (bbox, steps, matrix, warns, visible) in cases {
+        for scale in [1.0, 2.0] {
+            let mut pattern = TilingArtwork::new(&bbox, "0 0 1 rg 0 0 10 10 re f");
+            pattern.steps = steps;
+            pattern.matrix = &matrix;
+            let page = render_tiling_artwork(
+                tiling_artwork_config_page_pdf("q /PC cs /P1 scn 0 0 20 20 re f Q 1 0 0 rg 18 18 1 1 re f", Some(pattern), (20, 20)),
+                scale,
+            );
+            assert_eq!(page.warnings, if warns { vec![RenderWarning::PatternTruncated] } else { vec![] }, "numeric range case {bbox} at {scale}");
+            let pixels = page.rgba.as_chunks::<4>().0;
+            assert_eq!(
+                pixels.iter().filter(|p| p[0] > 192 && p[1] < 64 && p[2] < 64 && p[3] > 200).count(),
+                if scale == 1.0 { 1 } else { 4 },
+                "later sentinel must paint: {bbox}"
+            );
+            if visible {
+                assert!(
+                    pixels.iter().filter(|p| p[0] < 64 && p[1] < 64 && p[2] > 192 && p[3] > 200).count() > 40,
+                    "huge signed steps retain the visible first cell"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -2880,13 +3019,13 @@ fn a_tiling_pattern_drawn_once_shows_its_cell() {
     assert_eq!(at(&tiled, 40, 25, 35), blue, "a step of 20 repeats the cell");
 }
 
-/// #3356 review: a `/BBox` too thin to divide by (not zero, which is refused, but 1e-40
-/// wide) makes the cell scale infinite; it keeps the old path, so no infinite or NaN
-/// geometry reaches the cell renderer, the page renders and what follows still draws.
+/// #3356 review: a 1e-40-wide BBox must not pass unsupported transforms to the sampler.
+/// The f64 estimate remains finite, but the final sampling range is unsupported;
+/// the page and its later solid paint must survive without changing the old pixels.
 #[test]
-fn a_tiling_cell_too_thin_to_scale_keeps_the_old_path() {
+fn a_tiling_cell_too_thin_to_sample_keeps_later_paint() {
     assert!(hayro::usable_cell_scale(2.0, 1.0));
-    for (xs, ys) in [(f32::INFINITY, 1.0), (1.0, f32::NAN), (0.0, 1.0), (1.0, -2.0)] {
+    for (xs, ys) in [(f64::INFINITY, 1.0), (1.0, f64::NAN), (0.0, 1.0), (1.0, -2.0)] {
         assert!(!hayro::usable_cell_scale(xs, ys), "{xs} {ys}");
     }
     let thin = "0.0000000000000000000000000000000000000001";
