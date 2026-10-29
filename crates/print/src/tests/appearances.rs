@@ -59,6 +59,7 @@ fn render_page(bytes: Vec<u8>, index: usize) -> RenderedPage {
     render_page_at_size(bytes, index, (100, 100))
 }
 
+/// Explicit raster dimensions expose `/UserUnit` and sheet scaling without a default-size render hiding them.
 fn render_page_at_size(bytes: Vec<u8>, index: usize, size: (u32, u32)) -> RenderedPage {
     let page = PageRenderer::new(Arc::new(bytes), RenderConfig::default()).render(RenderRequest {
         page: index,
@@ -266,6 +267,7 @@ fn annotation_placement_preserves_small_transform_coefficients() {
     }
 }
 
+/// Compare bad-geometry output with a no-annotation control to ensure page artwork remains visible.
 #[test]
 fn unusable_appearance_geometry_keeps_page_artwork() {
     let (mut control, _, _) = widget_fixture(Some(Object::name("Form")), None);
@@ -492,6 +494,7 @@ fn shared_promotions_span_pages_without_merging_distinct_sources() {
 const CORNER_COLORS: [[u8; 4]; 4] = [[255, 0, 0, 255], [0, 0, 255, 255], [0, 255, 0, 255], [255, 255, 0, 255]];
 
 // Contributor-original, asymmetric 20 x 10 artwork: red/blue above green/yellow.
+/// Shift `/CropBox` and `/Rect` together so the colored, asymmetric artwork exposes origin and rotation errors.
 fn no_rotate_fixture(rotation: Object, origin: [f64; 2], subtype: &str, flags: i64) -> (Document, ObjRef, ObjRef) {
     let (mut doc, ap, annotation) = widget_fixture(Some(Object::name("Form")), None);
     let form = doc.get(ap).as_dict().unwrap().clone();
@@ -517,6 +520,7 @@ fn no_rotate_fixture(rotation: Object, origin: [f64; 2], subtype: &str, flags: i
     (doc, ap, annotation)
 }
 
+/// Colored quadrant samples distinguish every quarter-turn; white margins expose extent or anchor errors.
 fn assert_upright_corners(page: &RenderedPage, anchor: (usize, usize), scale: usize) {
     let (x, y) = anchor;
     for ((dx, dy), color) in [(5, 2), (15, 2), (5, 7), (15, 7)].into_iter().zip(CORNER_COLORS) {
@@ -527,8 +531,9 @@ fn assert_upright_corners(page: &RenderedPage, anchor: (usize, usize), scale: us
     }
 }
 
-/// Literal device-space anchors and interior colors distinguish pivot, orientation, size and
-/// the unflagged control, without reproducing the production counterrotation calculation.
+/// Literal anchors and colors test pivot, orientation, and size without copying production math.
+/// Direct and indirect `Text` subtypes with `/F 4` exercise implicit `NoRotate` without `/F 16`.
+/// Unflagged non-`Text` cases retain the rotating control.
 #[test]
 fn vector_print_preserves_no_rotate_appearance_anchors() {
     for (rotation, anchor, control) in [
@@ -576,6 +581,8 @@ fn vector_print_preserves_no_rotate_appearance_anchors() {
     }
 }
 
+/// Compare output pixel-for-pixel with the source shifted to its `/Rect` anchor.
+/// This also verifies that the exposed page area remains white.
 fn assert_translated_upright_source(actual: &RenderedPage, source: &RenderedPage, anchor: (i32, i32)) {
     let (dx, dy) = (anchor.0 - 40, anchor.1 - 50);
     for y in 0..100i32 {
@@ -588,6 +595,8 @@ fn assert_translated_upright_source(actual: &RenderedPage, source: &RenderedPage
     }
 }
 
+/// Compare print output with a rotation-zero source under shifted `/BBox` and `/Matrix` transforms.
+/// This also covers inherited and normalized `/Rotate` values.
 #[test]
 fn no_rotate_keeps_appearance_matrix_and_shifted_inherited_page_geometry() {
     for (rotation, inherited, origin, anchor) in
@@ -645,6 +654,7 @@ fn no_rotate_keeps_appearance_matrix_and_shifted_inherited_page_geometry() {
     }
 }
 
+/// Invalid `/Rotate` values normalize to zero while the eligible appearance remains upright.
 #[test]
 fn malformed_page_rotation_keeps_no_rotate_appearance_upright() {
     for rotation in [Object::Int(135), Object::Int(-45), Object::Real(90.5), Object::name("QuarterTurn")] {
@@ -657,6 +667,7 @@ fn malformed_page_rotation_keeps_no_rotate_appearance_upright() {
     }
 }
 
+/// `NoZoom` does not cancel print layout scaling across `UserUnit` and custom sheet sizes.
 #[test]
 fn no_rotate_keeps_user_units_and_sheet_scaling() {
     let (mut doc, _, annotation) = no_rotate_fixture(Object::Int(90), [-20.0, 30.0], "Widget", 28);
@@ -677,6 +688,7 @@ fn no_rotate_keeps_user_units_and_sheet_scaling() {
     assert_eq!(saved(&doc), before);
 }
 
+/// Counterrotating one use must not alter the shared stream or rotate its later unflagged use.
 #[test]
 fn no_rotate_is_per_invocation_when_appearances_are_shared() {
     let (mut doc, ap, annotation) = no_rotate_fixture(Object::Int(90), [0.0, 0.0], "Widget", 20);
@@ -702,6 +714,8 @@ fn no_rotate_is_per_invocation_when_appearances_are_shared() {
     assert_eq!(saved(&doc), before);
 }
 
+/// Refuse non-finite `NoRotate` placement without changing the source.
+/// Excluded and degenerate appearances retain their omission behavior.
 #[test]
 fn no_rotate_refuses_nonfinite_placement_and_still_skips_degenerate_appearances() {
     for (rotation, rect) in [(90, [1e308, 0.0, 1.7e308, 1e308]), (180, [1e308, 0.0, 1.7e308, 1e308]), (270, [-1e308, 0.0, -0.3e308, 1e308])] {
