@@ -5,7 +5,9 @@
 
 use egui::{Color32, CornerRadius, Pos2, Sense, Stroke, pos2, vec2};
 use pdfcraft_engine::signature_scan::{DEFAULT_SENSITIVITY, PREVIEW_MAX_SIDE, SCAN_MAX_SIDE, ScanError};
-use pdfcraft_engine::{Edit, FillMark, NewAnnotation, PhotoRect, Shape, SignatureImage, SignaturePhoto, Style, Turn};
+use pdfcraft_engine::{
+    Edit, EditError, FillMark, NewAnnotation, PhotoRect, Shape, SignatureImage, SignaturePhoto, SignaturePlacementSize, Style, Turn,
+};
 use pdfcraft_render::{DocInfo, PageInfo};
 
 use crate::canvas::{DocView, PageToolContext, PageXform};
@@ -48,6 +50,15 @@ pub enum SavedSig {
     Drawn(Vec<Vec<[f32; 2]>>),
     Typed(String),
     Image(#[serde(with = "image_data")] SignatureImage),
+}
+
+/// Check whether a saved target can accept a physical signature size.
+/// Typed and image targets keep their existing placement policy.
+pub(crate) fn validate_saved_size(target: &SavedSig, size: SignaturePlacementSize) -> Result<(), EditError> {
+    match target {
+        SavedSig::Drawn(strokes) => size.validate_drawing(strokes),
+        SavedSig::Typed(_) | SavedSig::Image(_) => Ok(()),
+    }
 }
 
 impl SavedSig {

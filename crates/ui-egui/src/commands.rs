@@ -375,9 +375,8 @@ impl PdfCraftApp {
     /// The same checks drive enablement, refusal text, and execution.
     fn signature_size_source(&self, id: &str) -> Result<pdfcraft_engine::SignaturePlacementSize, String> {
         let initials = id == "sign.fill.initials.size";
-        if if initials { self.initials.is_none() } else { self.signature.is_none() } {
-            return Err(tl!(if initials { "Save initials first" } else { "Save a signature first" }).to_string());
-        }
+        let target = if initials { self.initials.as_ref() } else { self.signature.as_ref() }
+            .ok_or_else(|| tl!(if initials { "Save initials first" } else { "Save a signature first" }).to_string())?;
         let Some((view_index, doc_id)) = self.active_ids() else { return Err(tl!("Open a document first").to_string()) };
         let Some(view) = self.views.get(view_index) else { return Err(tl!("Open a document first").to_string()) };
         let Some((page, annotation)) = view.comments.selected else { return Err(tl!("Select a placed signature first").to_string()) };
@@ -389,7 +388,10 @@ impl PdfCraftApp {
         }
         let doc = self.session.get(doc_id).ok_or_else(|| tl!("Open a document first").to_string())?;
         match doc.signature_placement_size(page, annotation) {
-            Ok(Some(size)) => Ok(size),
+            Ok(Some(size)) => {
+                crate::fill_sign::validate_saved_size(target, size).map_err(|error| error.to_string())?;
+                Ok(size)
+            }
             Ok(None) => Err(tl!("Select a placed signature first").to_string()),
             Err(error) => Err(error.to_string()),
         }

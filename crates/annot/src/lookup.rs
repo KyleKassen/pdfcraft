@@ -190,6 +190,10 @@ pub fn appearance_signature_rect(doc: &Document, page: usize, index: usize) -> R
     Ok(Some(rect))
 }
 
+pub(crate) fn is_signature_ink(doc: &Document, d: &Dict) -> bool {
+    d.name(b"Subtype") == Some(b"Ink") && short_signature_subject(doc, d)
+}
+
 fn short_signature_subject(doc: &Document, d: &Dict) -> bool {
     let Some(subject) = d.get(b"Subj").map(|o| doc.resolve(o)) else { return false };
     // This query only needs a short kind label. Bound raw bytes before PDF-text decoding

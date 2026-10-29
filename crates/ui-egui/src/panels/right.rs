@@ -24,8 +24,8 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let mut compare_action: Option<crate::compare_ui::PanelAction> = None;
     let mut bm_rename = app.bookmark_rename.clone();
     let bm_editable = app.session.get(id).is_some_and(|d| d.allows_assembly() && d.read_only_reason.is_none());
-    let has_saved_signature = app.signature.is_some();
-    let has_saved_initials = app.initials.is_some();
+    let saved_signature = app.signature.as_ref();
+    let saved_initials = app.initials.as_ref();
     // Prepare a form is open: the Fields panel orders tabs.
     let preparing = app.is_preparing();
     {
@@ -183,7 +183,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match panel {
                     RightPanel::Comments => {
-                        if let Some(e) = crate::comments_panel::show(ui, doc, view, prefs, has_saved_signature, has_saved_initials, &mut nav) {
+                        if let Some(e) = crate::comments_panel::show(ui, doc, view, prefs, saved_signature, saved_initials, &mut nav) {
                             panel_edit = Some(e);
                         }
                     }

@@ -1,5 +1,5 @@
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use pdfcraft_engine::{DocId, Edit, NewAnnotation, Shape, SignaturePlacementSize, Style};
 
 use crate::PdfCraftApp;
@@ -42,9 +42,11 @@ fn app() -> (PdfCraftApp, DocId) {
 }
 
 fn paint_menu(ui: &mut egui::Ui, app: &mut PdfCraftApp) {
+    let signature = app.signature.as_ref();
+    let initials = app.initials.as_ref();
     let view = &mut app.views[app.active.unwrap()];
     let doc = app.session.get(view.id).unwrap();
-    crate::comments::signature_size_items(ui, view, doc, app.signature.is_some(), app.initials.is_some());
+    crate::comments::signature_size_items(ui, view, doc, signature, initials);
 }
 
 fn cache_menu(ctx: &egui::Context, app: &mut PdfCraftApp) {
@@ -160,4 +162,67 @@ fn signature_size_menu_cache_actual_items_update_across_frames_source_changes_an
     assert!(h.state().initials_placement_size.is_some());
     assert_eq!(documents(h.state()), before);
     assert!(h.state().pending_signature_size_request.is_none());
+}
+
+fn drawn_target() -> SavedSig {
+    SavedSig::Drawn(vec![vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.0]]])
+}
+
+#[test]
+fn signature_size_command_checks_the_actual_drawn_target_and_keeps_typed_initials_independent() {
+    // The selected source is a typed placed appearance. Eligibility follows the saved target.
+    let (mut app, id) = app();
+    app.signature = Some(drawn_target());
+    let command = pdfcraft_engine::commands::command("sign.fill.signature.size").unwrap();
+    let valid_source_size = app.session.get(id).unwrap().signature_placement_size(0, 0).unwrap().unwrap();
+    assert!(app.command_enabled(command), "the normal typed appearance size fits the saved drawn target");
+    let before = documents(&app);
+    assert!(app.execute("sign.fill.signature.size"));
+    assert_eq!(app.signature_placement_size, Some(valid_source_size));
+    assert_eq!(documents(&app), before);
+
+    // Shrink the same selected typed source to a size that the drawn strokes cannot occupy.
+    app.session.apply(id, Edit::ResizeAnnotation { page: 0, index: 0, rect: [30.0, 180.0, 32.0, 182.0] }).unwrap();
+    let too_small = app.session.get(id).unwrap().signature_placement_size(0, 0).unwrap().unwrap();
+    let before = documents(&app);
+    let old_preferences = (app.signature_placement_size, app.initials_placement_size);
+    assert!(!app.command_enabled(command));
+    assert!(!app.execute("sign.fill.signature.size"));
+    assert_eq!((app.signature_placement_size, app.initials_placement_size), old_preferences);
+    assert_eq!(documents(&app), before);
+    assert!(app.pending_signature_size_request.is_none());
+    assert!(too_small.width() < valid_source_size.width());
+
+    // A typed initials target remains eligible for this same small source and updates only its slot.
+    app.initials = Some(SavedSig::Typed("SU".into()));
+    let before = documents(&app);
+    let old_signature_size = app.signature_placement_size;
+    let request = SignatureSizeRequest { doc: id, page: 0, annotation: 0, initials: true };
+    assert!(app.dispatch_signature_size_request(request));
+    assert_eq!(app.initials_placement_size, Some(too_small));
+    assert_eq!(app.signature_placement_size, old_signature_size);
+    assert_eq!(documents(&app), before);
+}
+
+#[test]
+fn signature_size_menu_checks_drawn_signature_and_typed_initials_independently() {
+    let (mut app, id) = app();
+    app.signature = Some(drawn_target());
+    app.initials = Some(SavedSig::Typed("SU".into()));
+    app.session.apply(id, Edit::ResizeAnnotation { page: 0, index: 0, rect: [30.0, 180.0, 32.0, 182.0] }).unwrap();
+
+    let mut h = Harness::builder().with_size(egui::vec2(600.0, 300.0)).build_ui_state(paint_menu, app);
+    h.run_steps(4);
+    assert!(h.query_by_label("Use this size for saved signature").is_some());
+    assert!(h.query_by_label("Use this size for saved initials").is_some());
+    assert!(h.get_by_label("Use this size for saved signature").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Use this size for saved initials").accesskit_node().is_disabled());
+    // The invalid signature action is disabled. Clicking it must not enqueue a request.
+    h.get_by_label("Use this size for saved signature").click();
+    h.run_steps(2);
+    assert!(h.state().views[0].comments.signature_size_request.is_none());
+    // The separate typed initials action remains available.
+    h.get_by_label("Use this size for saved initials").click();
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].comments.signature_size_request, Some(SignatureSizeRequest { doc: id, page: 0, annotation: 0, initials: true }));
 }

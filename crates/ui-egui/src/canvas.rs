@@ -2046,7 +2046,7 @@ fn draw_pages(
                 ui.separator();
             }
         }
-        comments::signature_size_items(ui, view, doc, env.signature.is_some(), env.initials.is_some());
+        comments::signature_size_items(ui, view, doc, env.signature.as_ref(), env.initials.as_ref());
         canvas_action = comments::context_menu(ui, view, info, prefs, allowed, can_modify).or(copy_image);
     });
     *out = PageOut {

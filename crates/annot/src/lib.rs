@@ -23,6 +23,7 @@ mod draw;
 mod info;
 mod lookup;
 mod modify;
+mod signature;
 mod types;
 
 #[cfg(test)]
@@ -41,6 +42,7 @@ pub use modify::{
     add_reply, add_text_replacement, delete_annotation, erase_ink, fillable, goes_with, move_annotation, set_contents, set_fill, set_font_size,
     set_locked, set_marked, set_points, set_rect, set_review_state, set_style, with_replies_and_popups,
 };
+pub use signature::{add_sized_signature, validate_signature_size};
 pub use types::{
     AttachIcon, FillMark, LineEnding, Markup, Meta, NOTE_SIZE, NewAnnotation, NoteIcon, OverlayFont, OverlayLook, ReviewState, Rgb, Shape,
     StampGroup, StampKind, Style, StyleChange, TextReplacement, rect_quad,

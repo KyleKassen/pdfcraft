@@ -30,6 +30,14 @@ impl SignaturePlacementSize {
         self.height
     }
 
+    /// Check whether the saved drawing can fit this physical size without thinning its
+    /// default stroke or clipping its curves. This does not depend on the eventual page.
+    pub fn validate_drawing<T: Copy + Into<f64>>(self, strokes: &[Vec<[T; 2]>]) -> Result<(), EditError> {
+        let width = crate::Style::default_for(&Shape::Signature { strokes: Vec::new() }).width;
+        pdfcraft_annot::validate_signature_size(strokes, width, [self.width, self.height])?;
+        Ok(())
+    }
+
     /// The user-space box, left-aligned and vertically centered at `at`, upright as the
     /// page is displayed. The same conversion is used for placement and cursor previews.
     pub fn rect_at(self, page: &PageInfo, at: [f64; 2]) -> Result<[f64; 4], EditError> {

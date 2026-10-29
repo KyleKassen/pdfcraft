@@ -116,8 +116,8 @@ pub(crate) fn show(
     doc: &pdfcraft_engine::Document,
     view: &mut DocView,
     prefs: &CommentPrefs,
-    has_signature: bool,
-    has_initials: bool,
+    signature: Option<&crate::fill_sign::SavedSig>,
+    initials: Option<&crate::fill_sign::SavedSig>,
     nav: &mut Option<Nav>,
 ) -> Option<Edit> {
     let t = &Tokens::get(ui.ctx());
@@ -289,7 +289,7 @@ pub(crate) fn show(
         let thread = replies_of(a);
         let rotation = info.pages.get(a.page).map_or(0, |p| p.rotation);
         if let Some(e) =
-            card(ui, view, CardContext { theme: t, annotation: a, rotation, thread, info, doc, prefs, allowed, has_signature, has_initials, nav })
+            card(ui, view, CardContext { theme: t, annotation: a, rotation, thread, info, doc, prefs, allowed, signature, initials, nav })
         {
             edit = Some(e);
         }
@@ -309,13 +309,13 @@ struct CardContext<'a> {
     doc: &'a pdfcraft_engine::Document,
     prefs: &'a CommentPrefs,
     allowed: bool,
-    has_signature: bool,
-    has_initials: bool,
+    signature: Option<&'a crate::fill_sign::SavedSig>,
+    initials: Option<&'a crate::fill_sign::SavedSig>,
     nav: &'a mut Option<Nav>,
 }
 
 fn card(ui: &mut egui::Ui, view: &mut DocView, context: CardContext<'_>) -> Option<Edit> {
-    let CardContext { theme: t, annotation: a, rotation, thread, info, doc, prefs, allowed, has_signature, has_initials, nav } = context;
+    let CardContext { theme: t, annotation: a, rotation, thread, info, doc, prefs, allowed, signature, initials: saved_initials, nav } = context;
     let mut edit = None;
     let key = (a.page, a.index);
     let selected = view.comments.selected == Some(key);
@@ -501,7 +501,7 @@ fn card(ui: &mut egui::Ui, view: &mut DocView, context: CardContext<'_>) -> Opti
         .show(|ui| {
             ui.set_min_width(160.0);
             crate::comments::attachment_items(ui, view, info, a);
-            crate::comments::signature_size_items(ui, view, doc, has_signature, has_initials);
+            crate::comments::signature_size_items(ui, view, doc, signature, saved_initials);
             if ui.button(tl_ctx!("comment menu", "Edit")).clicked() {
                 view.comments.open_editor(a.page, a.index, a.contents.clone().unwrap_or_default());
                 ui.close();

@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use pdfcraft_engine::{DocId, Edit, NewAnnotation, Session, Shape, Style};
 
-use super::{SignatureSizeMenuKey, signature_size_menu_eligible};
+use super::{SignatureSizeMenuKey, signature_size_menu_source};
 
 fn annotation(page: usize, signature: bool) -> Edit {
     let shape = if signature {
@@ -28,10 +28,11 @@ fn eligibility(ctx: &egui::Context, session: &Session, id: DocId, page: usize, a
     let key = SignatureSizeMenuKey::new(doc, page, annotation);
     let mut eligible = false;
     let mut output = ctx.run_ui(egui::RawInput::default(), |_| {
-        eligible = signature_size_menu_eligible(ctx, key, has_target, || {
+        eligible = signature_size_menu_source(ctx, key, has_target, || {
             queries.set(queries.get() + 1);
-            matches!(doc.signature_placement_size(page, annotation), Ok(Some(_)))
-        });
+            doc.signature_placement_size(page, annotation).ok().flatten()
+        })
+        .is_some();
     });
     output.textures_delta.clear();
     eligible

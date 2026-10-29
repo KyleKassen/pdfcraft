@@ -2188,3 +2188,452 @@ fn degenerate_and_absurd_leader_and_caption_values_do_not_panic() {
     assert!(long.contains(&format!("({}) Tj", "w".repeat(256))), "cut to 256");
     assert!(!long.contains(&"w".repeat(257)));
 }
+
+fn sized_signature_input(strokes: Vec<Vec<[f64; 2]>>, width: f64) -> NewAnnotation {
+    let shape = Shape::Signature { strokes };
+    NewAnnotation {
+        page: 0,
+        style: Style { color: [0.0, 0.0, 0.0], opacity: 1.0, width, fill: None },
+        shape,
+        contents: String::new(),
+        author: "Ada".into(),
+    }
+}
+
+fn signature_width(d: &Dict) -> f64 {
+    d.get(b"BS").and_then(Object::as_dict).and_then(|bs| bs.get(b"W")).and_then(Object::as_f64).expect("signature /BS /W")
+}
+
+fn signature_strokes(d: &Dict) -> Vec<Vec<[f64; 2]>> {
+    d.get(b"InkList")
+        .and_then(Object::as_array)
+        .expect("signature /InkList")
+        .iter()
+        .map(|stroke| {
+            let values = stroke.as_array().expect("stroke array");
+            values.as_chunks::<2>().0.iter().map(|pair| [pair[0].as_f64().expect("x"), pair[1].as_f64().expect("y")]).collect()
+        })
+        .collect()
+}
+
+#[test]
+fn sized_signature_fit_boundary_is_physical_and_strict_only_on_nonzero_axes() {
+    let horizontal = vec![vec![[0.0, 0.0], [2.0, 0.0]]];
+    assert!(validate_signature_size(&horizontal, 1.5, [3.499, 3.5]).is_err(), "just below 1.5 points plus 1 point of padding on each side");
+    assert!(
+        validate_signature_size(&horizontal, 1.5, [3.5, 3.5]).is_err(),
+        "the nondegenerate horizontal axis needs positive interior after padding"
+    );
+    assert!(
+        validate_signature_size(&horizontal, 1.5, [3.501, 3.5]).is_ok(),
+        "just above the physical minimum fits while the degenerate vertical axis is exact"
+    );
+    assert!(validate_signature_size(&horizontal, 1.5, [3.501, 3.499]).is_err(), "a degenerate axis still needs both line-width margins");
+    assert!(
+        validate_signature_size(&[vec![[0.0, 0.0], [0.0, 0.0]]], 1.5, [3.5, 3.5]).is_ok(),
+        "a positive-width dot fits at the exact two-axis boundary"
+    );
+
+    let mut doc = fixture();
+    let page = page_refs(&doc).expect("page tree")[0];
+    doc.update_dict(page, |d| d.set(b"UserUnit".to_vec(), Object::Int(2))).expect("sets page UserUnit");
+    let input = sized_signature_input(horizontal, 1.5);
+    let i = add_sized_signature(&mut doc, &input, [100.0, 100.0, 101.7505, 101.75], &meta("just-above-fit"))
+        .expect("just-above 3.5 by 3.5 physical-point fit adds");
+    let d = list(&doc, 0)[i].clone();
+    assert_eq!(rect(&d), [100.0, 100.0, 101.7505, 101.75]);
+    assert_eq!(signature_width(&d) * 2.0, 1.5, "raw border width is converted from physical points through /UserUnit");
+    assert!(ap_content(&doc, &d).contains(" w"), "a real appearance was generated");
+
+    let reopened = reopen(&doc);
+    let saved = &list(&reopened, 0)[i];
+    assert_eq!(rect(saved), [100.0, 100.0, 101.7505, 101.75]);
+    assert_eq!(signature_width(saved) * 2.0, 1.5);
+    assert!(!ap_content(&reopened, saved).is_empty());
+}
+
+#[test]
+fn signature_fit_uses_the_spline_control_hull_not_only_input_vertices() {
+    let strokes = vec![vec![[0.0, 0.0], [20.0, 0.0], [21.0, 100.0], [22.0, 0.0]]];
+    // The generated Catmull-Rom controls extend to x=23.5 and y=-100/6.
+    let mut raw_doc = fixture();
+    let raw_i = add_annotation(&mut raw_doc, &sized_signature_input(strokes.clone(), 1.5), &meta("spline-bounds")).expect("adds signature");
+    let raw = rect(&list(&raw_doc, 0)[raw_i]);
+    let epsilon = 1e-8;
+    assert!((raw[0] - -1.75).abs() < epsilon, "left padding includes the stroke width: {raw:?}");
+    assert!((raw[1] - (-100.0 / 6.0 - 1.75)).abs() < epsilon, "Rect includes the negative spline control and padding: {raw:?}");
+    assert!((raw[2] - 25.25).abs() < epsilon, "Rect includes x=23.5 spline control and padding: {raw:?}");
+    assert!((raw[3] - 101.75).abs() < epsilon);
+    let raw_saved = reopen(&raw_doc);
+    assert!(ap_content(&raw_saved, &list(&raw_saved, 0)[raw_i]).contains(" c\n"), "saved bounds have a smooth curve appearance");
+
+    assert!(validate_signature_size(&strokes, 1.5, [27.0, 120.0]).is_ok(), "a target can scale the complete control hull");
+    assert!(validate_signature_size(&strokes, 1.5, [27.1, 120.2]).is_ok());
+
+    let mut input = sized_signature_input(strokes, 1.5);
+    input.page = 0;
+    let mut doc = fixture();
+    let i = add_sized_signature(&mut doc, &input, [40.0, 40.0, 67.1, 160.2], &meta("spline-hull")).expect("control-hull fit adds");
+    let saved = reopen(&doc);
+    let d = &list(&saved, 0)[i];
+    assert_eq!(rect(d), [40.0, 40.0, 67.1, 160.2]);
+    assert_eq!(signature_strokes(d)[0].len(), 4, "input vertices survive the size fit");
+    let points: Vec<(f64, f64)> = signature_strokes(d)[0].iter().map(|p| (p[0], p[1])).collect();
+    let controls = appearance::smooth_segments(&points);
+    for &(x, y) in points.iter().chain(controls.iter().flat_map(|segment| segment.iter())) {
+        assert!(
+            (41.75 - 1e-8..=65.35 + 1e-8).contains(&x) && (41.75 - 1e-8..=158.45 + 1e-8).contains(&y),
+            "all actual curve controls retain physical padding: {x}/{y}"
+        );
+    }
+    let ap = ap_content(&saved, d);
+    assert!(ap.contains(" c\n"), "reopened signature appearance contains the smooth curve: {ap}");
+}
+
+#[test]
+fn resized_and_restyled_signature_keeps_multiple_strokes_and_coincident_dots() {
+    let strokes = vec![
+        vec![[10.0, 10.0], [50.0, 40.0], [90.0, 10.0]],
+        vec![[40.0, 30.0], [40.0, 30.0]],
+        vec![[40.0, 30.0], [40.0, 30.0]],
+        vec![[20.0, 20.0], [80.0, 20.0]],
+    ];
+    let mut doc = fixture();
+    let i = add_annotation(&mut doc, &sized_signature_input(strokes, 2.0), &meta("strokes")).expect("adds");
+    set_rect(&mut doc, 0, i, [200.0, 200.0, 300.0, 260.0], &meta("resize")).expect("resizes");
+    set_style(&mut doc, 0, i, StyleChange::new(Some([1.0, 0.0, 0.0]), None, Some(3.0), None), &meta("restyle")).expect("restyles");
+
+    let saved = reopen(&doc);
+    let d = &list(&saved, 0)[i];
+    let after = signature_strokes(d);
+    assert_eq!(after.len(), 4, "separate paths remain separate");
+    assert_eq!(after.iter().map(Vec::len).collect::<Vec<_>>(), [3, 2, 2, 2]);
+    assert_eq!(after[1][0], after[1][1], "first coincident-point stroke stays a dot");
+    assert_eq!(after[2][0], after[2][1], "second coincident-point stroke stays a dot");
+    assert_eq!(after[1][0], after[2][0], "coincident dot strokes remain coincident");
+    assert_eq!(signature_width(d), 3.0);
+    let ap = ap_content(&saved, d);
+    assert!(ap.contains("1 0 0 RG"), "restyled appearance has the new color: {ap}");
+    assert!(ap.matches(" c\n").count() >= 3, "curved stroke and both dot paths remain visible in the appearance: {ap}");
+}
+
+#[test]
+fn signature_dash_and_tiny_positive_width_remain_distinct_from_hairline() {
+    let mut doc = fixture();
+    let tiny = add_annotation(&mut doc, &sized_signature_input(vec![vec![[0.0, 0.0], [100.0, 0.0]]], 0.000001), &meta("tiny-dashed"))
+        .expect("tiny positive-width stroke adds");
+    let (_, tiny_ref) = annot_ref(&mut doc, 0, tiny).expect("signature ref");
+    let mut bs = Dict::new();
+    bs.set(b"W".to_vec(), Object::Real(0.000001));
+    bs.set(b"S".to_vec(), Object::name("D"));
+    bs.set(b"D".to_vec(), Object::Array(vec![Object::Real(0.000001), Object::Real(0.25)]));
+    doc.update_dict(tiny_ref, |d| d.set(b"BS".to_vec(), Object::Dict(bs))).expect("sets dash style");
+    set_rect(&mut doc, 0, tiny, [100.0, 100.0, 300.0, 150.0], &meta("tiny-resize")).expect("tiny dashed stroke resizes");
+    let tiny_saved = reopen(&doc);
+    let tiny_d = &list(&tiny_saved, 0)[tiny];
+    assert!(signature_width(tiny_d) > 0.0, "tiny width remains positive in the PDF dictionary");
+    let tiny_ap = ap_content(&tiny_saved, tiny_d);
+    assert!(tiny_ap.contains(" w") && !tiny_ap.contains("0 w"), "tiny positive line width was not collapsed to hairline: {tiny_ap}");
+    assert!(tiny_ap.contains(" d\n"), "dash operator remains in the appearance: {tiny_ap}");
+    let tokens: Vec<&str> = tiny_ap.split_whitespace().collect();
+    let width_at = tokens.iter().position(|token| *token == "w").unwrap();
+    let local_width = tokens[width_at - 1].parse::<f64>().unwrap();
+    assert!((local_width - 0.000005).abs() < 1e-15, "the tiny positive width is scaled and preserved: {tiny_ap}");
+    let dash_line = tiny_ap.lines().find(|line| line.ends_with(" 0 d")).unwrap();
+    let dash = dash_line.split(']').next().unwrap().trim_start_matches('[').split_whitespace().map(|v| v.parse::<f64>().unwrap()).collect::<Vec<_>>();
+    assert_eq!(dash.len(), 2);
+    assert!((dash[0] - 0.000005).abs() < 1e-15 && (dash[1] - 1.25).abs() < 1e-12, "dash lengths scale with the local frame: {tiny_ap}");
+
+    let mut hairline_doc = fixture();
+    let hairline = add_annotation(&mut hairline_doc, &sized_signature_input(vec![vec![[0.0, 0.0], [100.0, 0.0]]], 0.0), &meta("hairline"))
+        .expect("non-dot hairline adds");
+    set_rect(&mut hairline_doc, 0, hairline, [100.0, 100.0, 300.0, 150.0], &meta("hairline-resize")).expect("hairline resizes");
+    let hairline_saved = reopen(&hairline_doc);
+    let hairline_d = &list(&hairline_saved, 0)[hairline];
+    assert_eq!(signature_width(hairline_d), 0.0);
+    let hairline_ap = ap_content(&hairline_saved, hairline_d);
+    assert!(hairline_ap.contains("0 w"), "actual hairline remains a zero-width stroke: {hairline_ap}");
+    assert!(!hairline_ap.contains(" d\n"), "solid hairline stays distinct from the dashed tiny stroke");
+}
+
+#[test]
+fn refused_signature_resizes_preserve_dictionary_and_appearance() {
+    fn unchanged_after_refusal(mut doc: Document, i: usize, target: [f64; 4]) {
+        let before = list(&doc, 0)[i].clone();
+        let before_ap = ap_content(&doc, &before);
+        assert!(set_rect(&mut doc, 0, i, target, &meta("refused")).is_err());
+        let after = list(&doc, 0)[i].clone();
+        assert_eq!(after, before, "failed resize leaves all dictionary entries untouched");
+        assert_eq!(ap_content(&doc, &after), before_ap, "failed resize leaves the saved normal appearance untouched");
+    }
+
+    let make = || {
+        let mut doc = fixture();
+        let i = add_annotation(&mut doc, &sized_signature_input(vec![vec![[10.0, 10.0], [30.0, 20.0], [50.0, 10.0]]], 2.0), &meta("refusal"))
+            .expect("adds signature");
+        (doc, i)
+    };
+
+    let (mut locked, i) = make();
+    set_locked(&mut locked, 0, i, true).expect("locks signature");
+    unchanged_after_refusal(locked, i, [100.0, 100.0, 200.0, 160.0]);
+
+    for malformed in ["InkList", "BS", "Rect"] {
+        let (mut doc, i) = make();
+        let (_, r) = annot_ref(&mut doc, 0, i).expect("signature ref");
+        doc.update_dict(r, |d| match malformed {
+            "InkList" => {
+                d.set(b"InkList".to_vec(), Object::Array(vec![Object::Array(vec![Object::Real(1.0), Object::Real(2.0), Object::Real(3.0)])]))
+            }
+            "BS" => d.set(b"BS".to_vec(), Object::Int(7)),
+            "Rect" => d.set(b"Rect".to_vec(), Object::Array(vec![Object::Real(1.0), Object::Real(2.0), Object::Real(3.0)])),
+            _ => {}
+        })
+        .expect("sets malformed field");
+        unchanged_after_refusal(doc, i, [100.0, 100.0, 200.0, 160.0]);
+    }
+
+    let (doc, i) = make();
+    unchanged_after_refusal(doc, i, [1_000_000.0, 1_000_000.0, 1_000_000.001, 1_000_000.001]);
+}
+
+#[test]
+fn ordinary_ink_resize_remains_permissive_and_uses_its_existing_path() {
+    let mut doc = fixture();
+    let i = add_annotation(&mut doc, &new(0, Shape::Ink { strokes: vec![vec![[10.0, 10.0], [30.0, 20.0]]] }), &meta("ordinary-ink"))
+        .expect("adds ordinary ink");
+    set_rect(&mut doc, 0, i, [100.0, 100.0, 160.0, 150.0], &meta("ordinary-resize")).expect("ordinary ink still resizes");
+    let saved = reopen(&doc);
+    let d = &list(&saved, 0)[i];
+    assert_eq!(d.name(b"Subtype"), Some(&b"Ink"[..]));
+    assert_ne!(text(d, b"Subj"), "Signature");
+    assert_eq!(rect(d), [100.0, 100.0, 160.0, 150.0]);
+    assert!(!ap_content(&saved, d).is_empty());
+}
+
+fn safety_signature() -> (Document, usize, ObjRef) {
+    let mut doc = fixture();
+    let index =
+        add_annotation(&mut doc, &sized_signature_input(vec![vec![[10.0, 10.0], [30.0, 30.0], [50.0, 10.0]]], 2.0), &meta("safety-signature"))
+            .expect("adds the baseline drawn signature");
+    let (_, reference) = annot_ref(&mut doc, 0, index).expect("signature reference");
+    (doc, index, reference)
+}
+
+fn safety_bytes(doc: &Document) -> Vec<u8> {
+    write_incremental(doc, &SaveOptions::default()).expect("serializes the current document state")
+}
+
+fn safety_has_normal(doc: &Document, d: &Dict) -> bool {
+    d.get(b"AP").is_some_and(|ap| doc.resolve(ap).as_dict().is_some_and(|ap| ap.contains(b"N")))
+}
+
+fn safety_corrupt_signature(doc: &mut Document, r: ObjRef, case: &str) {
+    match case {
+        "bad_width" => {
+            let mut bs = Dict::new();
+            bs.set(b"W".to_vec(), Object::String(PdfString::text("not a number")));
+            doc.update_dict(r, |d| d.set(b"BS".to_vec(), Object::Dict(bs))).expect("sets malformed width");
+        }
+        "bad_rect_coordinate" => doc
+            .update_dict(r, |d| {
+                d.set(
+                    b"Rect".to_vec(),
+                    Object::Array(vec![Object::Real(1.0), Object::String(PdfString::text("bad")), Object::Real(50.0), Object::Real(50.0)]),
+                )
+            })
+            .expect("sets malformed rectangle coordinate"),
+        "short_rect" => doc
+            .update_dict(r, |d| d.set(b"Rect".to_vec(), Object::Array(vec![Object::Real(1.0), Object::Real(2.0), Object::Real(3.0)])))
+            .expect("sets malformed rectangle length"),
+        name => {
+            let ink_list = match name {
+                "non_array" => Object::Int(4),
+                "non_numeric_coordinate" => {
+                    Object::Array(vec![Object::Array(vec![Object::Real(1.0), Object::String(PdfString::text("bad coordinate"))])])
+                }
+                "empty_ink_list" => Object::Array(Vec::new()),
+                "empty_stroke" => Object::Array(vec![Object::Array(Vec::new())]),
+                "unmatched_coordinate" => Object::Array(vec![Object::Array(vec![Object::Real(1.0)])]),
+                "too_many_points" => {
+                    let coordinates = (0..=100_000).flat_map(|x| [Object::Real(x as f64), Object::Real(0.0)]).collect();
+                    Object::Array(vec![Object::Array(coordinates)])
+                }
+                "too_many_strokes" => Object::Array((0..=100_000).map(|_| Object::Array(vec![Object::Real(1.0), Object::Real(2.0)])).collect()),
+                "cyclic_ink_list" => {
+                    let cycle = doc.add(Object::Array(Vec::new()));
+                    doc.set(cycle, Object::Array(vec![Object::Ref(cycle)]));
+                    Object::Ref(cycle)
+                }
+                _ => panic!("unknown safety case: {name}"),
+            };
+            doc.update_dict(r, |d| d.set(b"InkList".to_vec(), ink_list)).expect("sets malformed InkList");
+        }
+    }
+}
+
+fn safety_expect_invalid(result: Result<(), AnnotError>, expected: &str) {
+    match result {
+        Err(AnnotError::Invalid(message)) => assert!(message.contains(expected), "expected {expected:?}, got {message:?}"),
+        Err(other) => panic!("expected an input-validation error containing {expected:?}, got {other:?}"),
+        Ok(()) => panic!("expected refusal containing {expected:?}"),
+    }
+}
+
+#[test]
+fn malformed_or_unbounded_drawn_signatures_refuse_without_changing_dictionary_or_appearance() {
+    let cases = [
+        ("non_array", "InkList is not an array"),
+        ("non_numeric_coordinate", "coordinate is not a number"),
+        ("empty_ink_list", "has no strokes"),
+        ("empty_stroke", "has no strokes"),
+        ("unmatched_coordinate", "unmatched coordinate"),
+        ("too_many_points", "more than 100,000 points"),
+        ("too_many_strokes", "too many strokes"),
+        ("cyclic_ink_list", "unmatched coordinate"),
+        ("bad_width", "line width is invalid"),
+        ("bad_rect_coordinate", "rectangle coordinate is not a number"),
+        ("short_rect", "rectangle is invalid"),
+    ];
+
+    for (case, expected) in cases {
+        let (mut doc, index, reference) = safety_signature();
+        safety_corrupt_signature(&mut doc, reference, case);
+        let before_bytes = safety_bytes(&doc);
+        let before_ap = ap_content(&doc, &list(&doc, 0)[index]);
+
+        safety_expect_invalid(set_rect(&mut doc, 0, index, [200.0, 200.0, 300.0, 260.0], &meta("refused")), expected);
+        assert_eq!(safety_bytes(&doc), before_bytes, "{case}: refused resize changed serialized document bytes");
+        assert_eq!(ap_content(&doc, &list(&doc, 0)[index]), before_ap, "{case}: refused resize replaced the stored AP");
+
+        safety_expect_invalid(set_appearance(&mut doc, reference), expected);
+        assert_eq!(safety_bytes(&doc), before_bytes, "{case}: refused appearance rebuild changed serialized document bytes");
+        assert_eq!(ap_content(&doc, &list(&doc, 0)[index]), before_ap, "{case}: refused appearance rebuild replaced the stored AP");
+    }
+}
+
+#[test]
+fn display_defaults_only_raw_malformed_signature_styles_and_keeps_derived_failures_ap_free() {
+    let cases = [
+        ("malformed_dash_defaults_solid", true),
+        ("empty_dash_defaults_solid", true),
+        ("zero_dash_defaults_solid", true),
+        ("malformed_width_defaults", true),
+        ("huge_valid_dash_is_not_defaulted", false),
+        ("tiny_valid_dash_is_not_defaulted", false),
+        ("width_at_upper_bound_is_not_defaulted", false),
+    ];
+
+    for (case, expect_display_appearance) in cases {
+        let (mut doc, index, reference) = safety_signature();
+        match case {
+            "malformed_dash_defaults_solid"
+            | "empty_dash_defaults_solid"
+            | "zero_dash_defaults_solid"
+            | "huge_valid_dash_is_not_defaulted"
+            | "tiny_valid_dash_is_not_defaulted" => {
+                let dash = match case {
+                    "malformed_dash_defaults_solid" => Object::String(PdfString::text("invalid dash")),
+                    "empty_dash_defaults_solid" => Object::Array(Vec::new()),
+                    "zero_dash_defaults_solid" => Object::Array(vec![Object::Real(0.0), Object::Real(0.0)]),
+                    "huge_valid_dash_is_not_defaulted" => Object::Array(vec![Object::Real(1e308), Object::Real(1.0)]),
+                    _ => Object::Array(vec![Object::Real(1e-320), Object::Real(1.0)]),
+                };
+                let mut bs = Dict::new();
+                bs.set(b"W".to_vec(), Object::Real(2.0));
+                bs.set(b"S".to_vec(), Object::name("D"));
+                bs.set(b"D".to_vec(), dash);
+                doc.update_dict(reference, |d| {
+                    d.set(b"BS".to_vec(), Object::Dict(bs));
+                    d.remove(b"AP");
+                })
+                .expect("sets display dash case");
+            }
+            "malformed_width_defaults" => {
+                let mut bs = Dict::new();
+                bs.set(b"W".to_vec(), Object::String(PdfString::text("invalid width")));
+                doc.update_dict(reference, |d| {
+                    d.set(b"BS".to_vec(), Object::Dict(bs));
+                    d.remove(b"AP");
+                })
+                .expect("sets display width case");
+            }
+            "width_at_upper_bound_is_not_defaulted" => {
+                let mut bs = Dict::new();
+                bs.set(b"W".to_vec(), Object::Real(1e7));
+                doc.update_dict(reference, |d| {
+                    d.set(b"BS".to_vec(), Object::Dict(bs));
+                    d.remove(b"AP");
+                })
+                .expect("sets display width upper bound");
+            }
+            _ => panic!("unknown display case: {case}"),
+        }
+
+        let source_before = safety_bytes(&doc);
+        assert!(!safety_has_normal(&doc, &list(&doc, 0)[index]), "{case}: source signature starts without /AP /N");
+        // The fixture's Square also needs a display appearance, so `Some(copy)` alone does not
+        // prove that this signature was drawn. Inspect the specific signature entry below.
+        let display = with_missing_appearances(&doc).expect("the fixture Square needs a display appearance");
+        let displayed_signature = list(&display, 0)[index].clone();
+        assert_eq!(safety_has_normal(&display, &displayed_signature), expect_display_appearance, "{case}");
+        if expect_display_appearance && case.contains("dash") {
+            let shown = ap_content(&display, &displayed_signature);
+            assert!(shown.contains(" m\n"), "{case}: compatibility default produces visible paths");
+            assert!(!shown.contains(" d\n"), "{case}: malformed raw dash defaults to solid only for display");
+        }
+        assert_eq!(safety_bytes(&doc), source_before, "{case}: display synthesis mutated saved source bytes");
+        assert!(!safety_has_normal(&doc, &list(&doc, 0)[index]), "{case}: source signature remains AP-free");
+    }
+}
+
+#[test]
+fn appearance_rebuild_accepts_one_level_indirect_inklist_and_border_style() {
+    let (mut doc, index, reference) = safety_signature();
+    let stroke = doc.add(Object::Array(vec![Object::Real(10.0), Object::Real(10.0), Object::Real(30.0), Object::Real(30.0)]));
+    let ink_list = doc.add(Object::Array(vec![Object::Ref(stroke)]));
+    let mut bs = Dict::new();
+    bs.set(b"W".to_vec(), Object::Real(2.0));
+    bs.set(b"S".to_vec(), Object::name("D"));
+    bs.set(b"D".to_vec(), Object::Array(vec![Object::Real(3.0), Object::Real(2.0)]));
+    let border_style = doc.add(Object::Dict(bs));
+    doc.update_dict(reference, |d| {
+        d.set(b"InkList".to_vec(), Object::Ref(ink_list));
+        d.set(b"BS".to_vec(), Object::Ref(border_style));
+    })
+    .expect("sets supported one-level indirect style objects");
+
+    // This exercises the appearance reader directly; set_style's separate raw preflight remains
+    // a distinct, already-qualified boundary.
+    set_appearance(&mut doc, reference).expect("a valid signature may use one-level indirect InkList and BS objects");
+    let saved = &list(&doc, 0)[index];
+    assert_eq!(saved.reference(b"InkList"), Some(ink_list));
+    assert_eq!(saved.reference(b"BS"), Some(border_style));
+    assert!(ap_content(&doc, saved).contains(" d\n"), "the valid indirect dash remains dashed");
+}
+
+#[test]
+fn pc_fill_sign_and_wrong_subject_do_not_route_ordinary_ink_through_signature_resize() {
+    let mut doc = fixture();
+    let index = add_annotation(&mut doc, &new(0, Shape::Ink { strokes: vec![vec![[10.0, 10.0], [30.0, 20.0]]] }), &meta("ordinary-ink-control"))
+        .expect("adds ordinary ink");
+    let (_, reference) = annot_ref(&mut doc, 0, index).expect("ordinary ink ref");
+    let mut malformed_bs = Dict::new();
+    malformed_bs.set(b"W".to_vec(), Object::String(PdfString::text("not a signature width")));
+    malformed_bs.set(b"S".to_vec(), Object::name("S"));
+    doc.update_dict(reference, |d| {
+        d.set(b"Subj".to_vec(), Object::String(PdfString::text("Not a signature")));
+        d.set(b"PCFillSign".to_vec(), Object::Bool(true));
+        d.set(b"BS".to_vec(), Object::Dict(malformed_bs));
+    })
+    .expect("sets Fill and Sign marker with an unrelated subject");
+
+    set_rect(&mut doc, 0, index, [100.0, 100.0, 160.0, 150.0], &meta("ordinary-resize")).expect("ordinary Ink keeps its established resize route");
+    let saved = &list(&reopen(&doc), 0)[index];
+    assert_eq!(saved.name(b"Subtype"), Some(&b"Ink"[..]));
+    assert_eq!(text(saved, b"Subj"), "Not a signature");
+    assert!(matches!(saved.get(b"PCFillSign"), Some(Object::Bool(true))));
+    assert_eq!(rect(saved), [100.0, 100.0, 160.0, 150.0]);
+    assert!(matches!(saved.get(b"BS").and_then(Object::as_dict).and_then(|bs| bs.get(b"W")), Some(Object::String(_))));
+    assert!(saved.get(b"AP").is_some(), "ordinary Ink receives its normal established appearance");
+}

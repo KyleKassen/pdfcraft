@@ -360,10 +360,13 @@ pub(crate) fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut E
         Edit::AddSizedSignature(placement) => {
             use crate::fill_sign::SignaturePlacementSource;
             let meta = cx.meta();
-            let (page, index) = match &placement.source {
-                SignaturePlacementSource::Annotation(a) => (a.page, pdfcraft_annot::add_annotation(doc, a, &meta)?),
+            let (page, index, needs_resize) = match &placement.source {
+                SignaturePlacementSource::Annotation(a) if matches!(a.shape, pdfcraft_annot::Shape::Signature { .. }) => {
+                    (a.page, pdfcraft_annot::add_sized_signature(doc, a, placement.rect, &meta)?, false)
+                }
+                SignaturePlacementSource::Annotation(a) => (a.page, pdfcraft_annot::add_annotation(doc, a, &meta)?, true),
                 SignaturePlacementSource::Image { page, rect, name, file, author } => {
-                    (*page, add_custom_stamp(doc, *page, *rect, name, file, author, &meta)?)
+                    (*page, add_custom_stamp(doc, *page, *rect, name, file, author, &meta)?, true)
                 }
             };
             // The builder returns the actual index. Checking the created kind also rejects
@@ -372,7 +375,9 @@ pub(crate) fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut E
             if pdfcraft_annot::appearance_signature_rect(doc, page, index)?.is_none() {
                 return Err(EditError::Invalid("the placement is not an appearance signature".into()));
             }
-            pdfcraft_annot::set_rect(doc, page, index, placement.rect, &meta)?;
+            if needs_resize {
+                pdfcraft_annot::set_rect(doc, page, index, placement.rect, &meta)?;
+            }
         }
         Edit::AddCustomStamp { page, rect, name, file, author } => {
             add_custom_stamp(doc, *page, *rect, name, file, author, &cx.meta())?;

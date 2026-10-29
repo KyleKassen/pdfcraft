@@ -22,55 +22,58 @@ impl SignatureSizeMenuKey {
 #[derive(Clone, Copy)]
 struct SignatureSizeMenuCache {
     key: SignatureSizeMenuKey,
-    eligible: bool,
+    source_size: Option<pdfcraft_engine::SignaturePlacementSize>,
 }
 
-fn signature_size_menu_eligible(ctx: &egui::Context, key: SignatureSizeMenuKey, has_target: bool, query: impl FnOnce() -> bool) -> bool {
+fn signature_size_menu_source(
+    ctx: &egui::Context,
+    key: SignatureSizeMenuKey,
+    has_target: bool,
+    query: impl FnOnce() -> Option<pdfcraft_engine::SignaturePlacementSize>,
+) -> Option<pdfcraft_engine::SignaturePlacementSize> {
     if !has_target {
-        return false;
+        return None;
     }
     // Replace one entry, rather than retaining a new egui data ID for every document,
     // selection and edit generation. Both comment menu surfaces share this slot.
     let id = egui::Id::unique("signature-size-menu-eligibility");
     if let Some(cached) = ctx.data(|data| data.get_temp::<SignatureSizeMenuCache>(id)).filter(|cached| cached.key == key) {
-        return cached.eligible;
+        return cached.source_size;
     }
-    let eligible = query();
-    ctx.data_mut(|data| data.insert_temp(id, SignatureSizeMenuCache { key, eligible }));
-    eligible
+    let source_size = query();
+    ctx.data_mut(|data| data.insert_temp(id, SignatureSizeMenuCache { key, source_size }));
+    source_size
 }
 
 /// Offer explicit size-copy actions only for an appearance the engine recognizes as a
-/// Fill & Sign signature, and only when the corresponding saved target exists.
-pub(crate) fn signature_size_items(ui: &mut egui::Ui, view: &mut DocView, doc: &pdfcraft_engine::Document, has_signature: bool, has_initials: bool) {
+/// Fill & Sign signature. Each action is checked against its actual saved destination.
+pub(crate) fn signature_size_items(
+    ui: &mut egui::Ui,
+    view: &mut DocView,
+    doc: &pdfcraft_engine::Document,
+    signature: Option<&crate::fill_sign::SavedSig>,
+    initials: Option<&crate::fill_sign::SavedSig>,
+) {
     let Some((page, index)) = view.comments.selected else { return };
     let key = SignatureSizeMenuKey::new(doc, page, index);
-    if !signature_size_menu_eligible(ui.ctx(), key, has_signature || has_initials, || {
-        matches!(doc.signature_placement_size(page, index), Ok(Some(_)))
-    }) {
+    let Some(source_size) = signature_size_menu_source(ui.ctx(), key, signature.is_some() || initials.is_some(), || {
+        doc.signature_placement_size(page, index).ok().flatten()
+    }) else {
         return;
-    }
+    };
     let mut offered = false;
-    if has_signature {
-        if ui
-            .button(tl!("Use this size for saved signature"))
-            .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."))
-            .clicked()
-        {
+    for (target, is_initials, label) in
+        [(signature, false, "Use this size for saved signature"), (initials, true, "Use this size for saved initials")]
+    {
+        let Some(target) = target else { continue };
+        let compatibility = crate::fill_sign::validate_saved_size(target, source_size);
+        let response = ui
+            .add_enabled(compatibility.is_ok(), egui::Button::new(tl!(label)))
+            .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."));
+        let response = if let Err(error) = compatibility { response.on_disabled_hover_text(error.to_string()) } else { response };
+        if response.clicked() {
             view.comments.signature_size_request =
-                Some(crate::fill_sign::SignatureSizeRequest { doc: view.id, page, annotation: index, initials: false });
-            ui.close();
-        }
-        offered = true;
-    }
-    if has_initials {
-        if ui
-            .button(tl!("Use this size for saved initials"))
-            .on_hover_text(tl!("Future placements use this size. Existing signatures are unchanged."))
-            .clicked()
-        {
-            view.comments.signature_size_request =
-                Some(crate::fill_sign::SignatureSizeRequest { doc: view.id, page, annotation: index, initials: true });
+                Some(crate::fill_sign::SignatureSizeRequest { doc: view.id, page, annotation: index, initials: is_initials });
             ui.close();
         }
         offered = true;

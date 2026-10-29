@@ -338,6 +338,12 @@ pub fn set_rect(doc: &mut Document, page: usize, index: usize, rect: [f64; 4], m
     unlocked(doc, r)?;
     let d = annot_dict(doc, r);
     let subtype = String::from_utf8_lossy(d.name(b"Subtype").unwrap_or_default()).into_owned();
+    if super::lookup::is_signature_ink(doc, &d) {
+        if !finite(&rect) {
+            return Err(AnnotError::Invalid("the signature rectangle must be finite".into()));
+        }
+        return super::signature::resize_signature(doc, page, r, normalize(rect), meta);
+    }
     if subtype == "Stamp" {
         let rect = normalize(rect);
         if !finite(&rect) || rect[2] <= rect[0] || rect[3] <= rect[1] {
