@@ -4799,8 +4799,8 @@ milestone = "M6"
 status = "shipped"
 commands = ["form.merge_data"]
 tools = ["form_merge_data"]
-evidence = ["crates/xfdf/src/tests.rs::data_files_merge_into_a_spreadsheet", "crates/automation/tests/it/automation.rs::merging_form_data_into_a_spreadsheet", "crates/ui-egui/tests/it/javascript.rs::merge_data_files_into_a_spreadsheet", "crates/xfdf/src/tests.rs::csv_headers_with_tabs_survive_export_import_and_save", "crates/automation/src/tests.rs::form_merge_data_keeps_existing_output_when_a_later_input_has_invalid_utf8"]
-notes = "FDF, XFDF or filled-in PDF forms \u2192 CSV, a column per field and a row per file. CSV header tabs, quotes and line breaks retain field identities through import and save/reopen; ambiguous external table detection remains heuristic. Malformed UTF-8 XFDF makes the whole merge fail before creating or replacing CSV output; binary FDF/PDF decoding is unchanged."
+evidence = ["crates/xfdf/src/tests.rs::data_files_merge_into_a_spreadsheet", "crates/automation/tests/it/automation.rs::merging_form_data_into_a_spreadsheet", "crates/ui-egui/tests/it/javascript.rs::merge_data_files_into_a_spreadsheet", "crates/xfdf/src/tests.rs::csv_headers_with_tabs_survive_export_import_and_save", "crates/automation/src/tests.rs::form_merge_data_keeps_existing_output_when_a_later_input_has_invalid_utf8", "crates/automation/src/tests.rs::form_merge_data_pdf_marker_classifies_xfdf_before_writing", "crates/xfdf/src/tests.rs::data_values_pdf_marker_fallback_preserves_binary_formats"]
+notes = "FDF, XFDF or filled-in PDF forms \u2192 CSV, a column per field and a row per file. CSV header tabs, quotes and line breaks retain field identities through import and save/reopen; ambiguous external table detection remains heuristic. Malformed UTF-8 XFDF makes the whole merge fail before creating or replacing CSV output; binary FDF/PDF decoding is unchanged. Recognizable XFDF roots keep embedded PDF markers on the strict UTF-8 text path; direct binary signatures and unrecognized prefixed PDFs retain their existing routing."
 
 [[feature]]
 id = "form.flatten-fields"

@@ -52,3 +52,8 @@ with `roxmltree`.
 Text form-data imports require valid UTF-8, optionally with a UTF-8 BOM.
 Malformed bytes are rejected before changing fields or comments, including when merging XFDF into a spreadsheet.
 Genuinely encoded U+FFFD is preserved; binary FDF/PDF string encodings and the engine's separate XFA data decoders retain their existing behavior.
+
+For spreadsheet extraction, direct FDF/PDF signatures retain binary precedence.
+An identifiable XFDF root (after an optional BOM, comments and processing instructions) keeps `%PDF-` in comments or values on the text path.
+Other prefixes retain the existing PDF-header heuristic; unsupported declarations such as DOCTYPE are not identified as XFDF by this lexical check.
+The full XML parser still validates every recognized XFDF document.

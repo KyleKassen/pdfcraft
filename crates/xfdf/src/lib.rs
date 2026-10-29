@@ -139,8 +139,39 @@ fn form_data_text(bytes: &[u8]) -> Result<&str, DataError> {
     std::str::from_utf8(bytes).map_err(|e| DataError::Malformed(format!("form data is not valid UTF-8: {e}; save the text file as UTF-8")))
 }
 
+/// Identify an XFDF root without decoding or accepting its XML, so embedded PDF markers stay text.
+fn looks_like_xfdf(bytes: &[u8]) -> bool {
+    let mut rest = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    loop {
+        let start = rest.iter().position(|b| !b" \t\r\n".contains(b)).unwrap_or(rest.len());
+        let Some(trimmed) = rest.get(start..) else { return false };
+        rest = trimmed;
+        let (body, terminator) = if let Some(body) = rest.strip_prefix(b"<!--") {
+            (body, b"-->".as_slice())
+        } else if let Some(body) = rest.strip_prefix(b"<?") {
+            (body, b"?>".as_slice())
+        } else {
+            break;
+        };
+        let Some(end) = body.windows(terminator.len()).position(|w| w == terminator) else { return false };
+        let Some(after) = end.checked_add(terminator.len()).and_then(|offset| body.get(offset..)) else { return false };
+        rest = after;
+    }
+    let Some(tag) = rest.strip_prefix(b"<") else { return false };
+    let Some(end) = tag.iter().position(|b| b" \t\r\n>/".contains(b)) else { return false };
+    let Some(name) = tag.get(..end) else { return false };
+    if name == b"xfdf" {
+        return true;
+    }
+    let Some(prefix) = name.strip_suffix(b":xfdf") else { return false };
+    // The real XML parser validates Unicode names and namespace bindings after strict UTF-8 decoding.
+    prefix.first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || *b >= 0x80)
+        && prefix.iter().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(b) || *b >= 0x80)
+}
+
 /// The field values in a form data file (FDF or XFDF) or a filled-in PDF form, in file order.
 /// Malformed UTF-8 in XFDF is rejected; binary FDF and PDF retain their PDF string encodings.
+/// Direct FDF/PDF signatures take precedence; an identifiable XFDF root keeps embedded PDF markers as text.
 pub fn data_values(bytes: &[u8]) -> Result<Vec<(String, Vec<String>)>, DataError> {
     if bytes.starts_with(b"%FDF") {
         let fdf = Document::open(std::sync::Arc::new(bytes.to_vec())).map_err(|e| DataError::Malformed(e.to_string()))?;
@@ -152,7 +183,7 @@ pub fn data_values(bytes: &[u8]) -> Result<Vec<(String, Vec<String>)>, DataError
         }
         return Ok(values);
     }
-    if bytes.starts_with(b"%PDF") || bytes.windows(5).take(1024).any(|w| w == b"%PDF-") {
+    if bytes.starts_with(b"%PDF") || (bytes.windows(5).take(1024).any(|w| w == b"%PDF-") && !looks_like_xfdf(bytes)) {
         let doc = Document::open(std::sync::Arc::new(bytes.to_vec())).map_err(|e| DataError::Malformed(e.to_string()))?;
         return Ok(pdfcraft_forms::fields(&doc)
             .into_iter()
